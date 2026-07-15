@@ -1,0 +1,11 @@
+PyQt6
+numpy
+opencv-python
+rasterio
+pyshp
+ultralytics
+pyinstaller
+
+# torch: install manual sesuai versi CUDA kamu, JANGAN lewat requirements.txt ini.
+# Contoh untuk CUDA 12.4 (samakan dengan yang dipakai training kamu):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
