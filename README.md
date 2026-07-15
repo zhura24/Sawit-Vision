@@ -25,7 +25,7 @@ Desktop application for **Oil Palm Tree Detection** using a **YOLO-based multisp
 
 # 📷 Application Screenshot
 
-> **Replace the image below with your own application screenshot.**
+
 
 <p align="center">
 <img src="docs/gui_screenshot.png" width="900">
