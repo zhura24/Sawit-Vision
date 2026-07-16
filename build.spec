@@ -18,6 +18,14 @@ datas = []
 binaries = []
 hiddenimports = []
 
+# --- sawit-chan.png: aset gambar, bukan python module, harus didaftarkan manual ---
+# taruh di root folder exe (dist/SawitVision/sawit-chan.png), match sama pengecekan
+# sys._MEIPASS di load_and_process_sprites().
+import os as _os
+_sawit_chan_png = _os.path.join(_os.path.dirname(_os.path.abspath(SPEC)), "sawit-chan.png")
+if _os.path.exists(_sawit_chan_png):
+    datas += [(_sawit_chan_png, ".")]
+
 # --- rasterio: butuh GDAL data files + banyak submodule dinamis ---
 for pkg in ["rasterio"]:
     d, b, h = collect_all(pkg)
