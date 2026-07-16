@@ -10,15 +10,17 @@ acuan penilaian model AI.
 import os
 import traceback
 
-from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QObject, QThread, pyqtSignal, QSize
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit, QPushButton,
     QFileDialog, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QMessageBox,
     QListWidget, QListWidgetItem, QInputDialog, QHeaderView, QSplitter,
-    QPlainTextEdit,
+    QPlainTextEdit, QStyle,
 )
 
-from model_comparison import read_points_shp, evaluate_model, export_comparison_excel
+from model_comparison import read_points_any, evaluate_model, export_comparison_excel
+
+VECTOR_FILTER = "Vector Files (*.shp *.gpkg *.geojson *.json);;Shapefile (*.shp);;GeoPackage (*.gpkg);;GeoJSON (*.geojson *.json)"
 
 
 class ComparisonWorker(QObject):
@@ -32,17 +34,18 @@ class ComparisonWorker(QObject):
         self.model_entries = model_entries  # list of (name, path)
         self.threshold = threshold
         self.manual_xy = None
+        self.manual_attrs = []
 
     def run(self):
         try:
             self.log.emit(f"Membaca centroid manual: {self.manual_path}")
-            self.manual_xy, _ = read_points_shp(self.manual_path)
+            self.manual_xy, self.manual_attrs = read_points_any(self.manual_path)
             self.log.emit(f"  -> {len(self.manual_xy)} titik manual.")
 
             results = []
             for name, path in self.model_entries:
                 self.log.emit(f"Memproses model '{name}': {path}")
-                infer_xy, _ = read_points_shp(path)
+                infer_xy, infer_attrs = read_points_any(path)
                 metrics, matches, fp, fn = evaluate_model(self.manual_xy, infer_xy, self.threshold)
                 self.log.emit(
                     f"  -> N={metrics['n_infer']} TP={metrics['tp']} FP={metrics['fp']} "
@@ -50,7 +53,7 @@ class ComparisonWorker(QObject):
                     f"F1={metrics['f1']:.3f} | mean_dist={metrics['mean_dist']:.3f}m"
                 )
                 results.append({
-                    "name": name, "path": path, "xy": infer_xy,
+                    "name": name, "path": path, "xy": infer_xy, "attrs": infer_attrs,
                     "metrics": metrics, "matches": matches, "fp": fp, "fn": fn,
                 })
             self.finished.emit(results)
@@ -66,6 +69,7 @@ class ComparisonPage(QWidget):
         self.manual_path = None
         self.model_entries = []  # list of (name, path)
         self.manual_xy = None
+        self.manual_attrs = []
         self.results = None
         self.threshold = 1.0
         self.worker = None
@@ -73,6 +77,9 @@ class ComparisonPage(QWidget):
         self._build_ui()
 
     # ------------------------------------------------------------
+    def _std_icon(self, sp):
+        return self.style().standardIcon(sp)
+
     def _build_ui(self):
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -85,22 +92,26 @@ class ComparisonPage(QWidget):
         side.setObjectName("sidebar")
         sv = QVBoxLayout(side)
         sv.setContentsMargins(10, 10, 10, 10)
-        sv.setSpacing(10)
+        sv.setSpacing(12)
 
         card_manual = QFrame()
         card_manual.setObjectName("sidebarCard")
         lm = QVBoxLayout(card_manual)
-        title_manual = QLabel("Centroid Manual (Ground Truth):")
+        lm.setContentsMargins(12, 12, 12, 12)
+        lm.setSpacing(8)
+        title_manual = QLabel("Centroid Manual (Ground Truth)")
         title_manual.setObjectName("sidebarCardTitle")
         lm.addWidget(title_manual)
         row_m = QHBoxLayout()
         self.txt_manual = QLineEdit()
         self.txt_manual.setReadOnly(True)
-        self.txt_manual.setPlaceholderText("Belum dipilih (.shp)")
-        btn_manual = QPushButton("...")
-        btn_manual.setFixedWidth(32)
+        self.txt_manual.setPlaceholderText("Belum dipilih (.shp / .gpkg / .geojson)")
+        btn_manual = QPushButton()
+        btn_manual.setIcon(self._std_icon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        btn_manual.setToolTip("Pilih file centroid manual")
+        btn_manual.setFixedSize(34, 30)
         btn_manual.clicked.connect(self.pick_manual)
-        row_m.addWidget(self.txt_manual)
+        row_m.addWidget(self.txt_manual, 1)
         row_m.addWidget(btn_manual)
         lm.addLayout(row_m)
         sv.addWidget(card_manual)
@@ -108,18 +119,34 @@ class ComparisonPage(QWidget):
         card_models = QFrame()
         card_models.setObjectName("sidebarCard")
         lmo = QVBoxLayout(card_models)
-        title_models = QLabel("Model / Hasil Inference yang Dibandingkan:")
+        lmo.setContentsMargins(12, 12, 12, 12)
+        lmo.setSpacing(8)
+        title_models = QLabel("Model / Hasil Inference Dibandingkan")
         title_models.setObjectName("sidebarCardTitle")
         lmo.addWidget(title_models)
+
         self.list_models = QListWidget()
-        self.list_models.setMinimumHeight(140)
+        self.list_models.setMinimumHeight(90)
+        self.list_models.setMaximumHeight(160)
+        self.list_models.setSpacing(3)
+        self.list_models.setAlternatingRowColors(True)
         lmo.addWidget(self.list_models)
+
+        self.lbl_empty_hint = QLabel("Belum ada model. Klik \u201c+ Tambah Model\u201d untuk mulai.")
+        self.lbl_empty_hint.setWordWrap(True)
+        self.lbl_empty_hint.setStyleSheet("color: #8a8d92; font-size: 11px; padding: 2px 0;")
+        lmo.addWidget(self.lbl_empty_hint)
+
         row_btn = QHBoxLayout()
-        btn_add = QPushButton("+ Tambah Model")
+        btn_add = QPushButton(" Tambah Model")
+        btn_add.setIcon(self._std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
         btn_add.clicked.connect(self.add_model)
-        btn_remove = QPushButton("Hapus")
+        btn_remove = QPushButton()
+        btn_remove.setIcon(self._std_icon(QStyle.StandardPixmap.SP_TrashIcon))
+        btn_remove.setToolTip("Hapus model terpilih")
+        btn_remove.setFixedWidth(40)
         btn_remove.clicked.connect(self.remove_model)
-        row_btn.addWidget(btn_add)
+        row_btn.addWidget(btn_add, 1)
         row_btn.addWidget(btn_remove)
         lmo.addLayout(row_btn)
         sv.addWidget(card_models)
@@ -127,27 +154,37 @@ class ComparisonPage(QWidget):
         card_param = QFrame()
         card_param.setObjectName("sidebarCard")
         lp = QVBoxLayout(card_param)
-        title_param = QLabel("Parameter Evaluasi:")
+        lp.setContentsMargins(12, 12, 12, 12)
+        lp.setSpacing(8)
+        title_param = QLabel("Threshold Toleransi Jarak")
         title_param.setObjectName("sidebarCardTitle")
         lp.addWidget(title_param)
         row_th = QHBoxLayout()
-        row_th.addWidget(QLabel("Threshold jarak (meter):"))
         self.spin_threshold = QDoubleSpinBox()
         self.spin_threshold.setRange(0.05, 100.0)
         self.spin_threshold.setSingleStep(0.1)
+        self.spin_threshold.setSuffix(" m")
         self.spin_threshold.setValue(1.0)
-        row_th.addWidget(self.spin_threshold)
+        row_th.addWidget(self.spin_threshold, 1)
         lp.addLayout(row_th)
-        hint = QLabel("Titik inference dianggap benar (TP) jika jaraknya\nke centroid manual terdekat \u2264 threshold.")
+        hint = QLabel(
+            "Deteksi dianggap benar (TP) jika \u2264 jarak ini dari titik\n"
+            "manual terdekat. Acuan: \u00bd radius kanopi sawit (\u2248 1\u20131.5 m)."
+        )
+        hint.setWordWrap(True)
         hint.setStyleSheet("color: #8a8d92; font-size: 11px;")
         lp.addWidget(hint)
         sv.addWidget(card_param)
 
         self.btn_run = QPushButton("Jalankan Perbandingan")
+        self.btn_run.setObjectName("runButton")
+        self.btn_run.setIcon(self._std_icon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_run.setMinimumHeight(36)
         self.btn_run.clicked.connect(self.run_comparison)
         sv.addWidget(self.btn_run)
 
         self.btn_export = QPushButton("Export ke Excel...")
+        self.btn_export.setIcon(self._std_icon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_excel)
         sv.addWidget(self.btn_export)
@@ -186,13 +223,13 @@ class ComparisonPage(QWidget):
 
     # ------------------------------------------------------------
     def pick_manual(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Pilih Centroid Manual", "", "Shapefile (*.shp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Pilih Centroid Manual", "", VECTOR_FILTER)
         if path:
             self.manual_path = path
             self.txt_manual.setText(path)
 
     def add_model(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Pilih Hasil Inference Model", "", "Shapefile (*.shp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Pilih Hasil Inference Model", "", VECTOR_FILTER)
         if not path:
             return
         default_name = os.path.splitext(os.path.basename(path))[0]
@@ -201,7 +238,10 @@ class ComparisonPage(QWidget):
             return
         name = name.strip()
         self.model_entries.append((name, path))
-        self.list_models.addItem(QListWidgetItem(f"{name}  \u2014  {os.path.basename(path)}"))
+        item = QListWidgetItem(f"{name}  \u2014  {os.path.basename(path)}")
+        item.setIcon(self._std_icon(QStyle.StandardPixmap.SP_FileIcon))
+        self.list_models.addItem(item)
+        self._update_empty_hint()
 
     def remove_model(self):
         row = self.list_models.currentRow()
@@ -209,6 +249,10 @@ class ComparisonPage(QWidget):
             return
         self.list_models.takeItem(row)
         del self.model_entries[row]
+        self._update_empty_hint()
+
+    def _update_empty_hint(self):
+        self.lbl_empty_hint.setVisible(self.list_models.count() == 0)
 
     def run_comparison(self):
         if not self.manual_path:
@@ -238,6 +282,7 @@ class ComparisonPage(QWidget):
     def _on_finished(self, results):
         self.results = results
         self.manual_xy = self.worker.manual_xy
+        self.manual_attrs = self.worker.manual_attrs
         self._fill_table(results)
         self.btn_run.setEnabled(True)
         self.btn_export.setEnabled(True)
@@ -267,7 +312,10 @@ class ComparisonPage(QWidget):
         if not path:
             return
         try:
-            export_comparison_excel(path, self.manual_xy, self.results, self.threshold)
+            export_comparison_excel(
+                path, self.manual_xy, self.results, self.threshold,
+                manual_attrs=getattr(self, "manual_attrs", None),
+            )
             QMessageBox.information(self, "Berhasil", f"Excel tersimpan:\n{path}")
         except Exception:
             QMessageBox.critical(self, "Gagal", "Gagal menyimpan Excel:\n" + traceback.format_exc())

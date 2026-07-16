@@ -560,6 +560,34 @@ QScrollBar::handle:vertical { background: %(border_light)s; border-radius: 4px; 
 QScrollBar::handle:vertical:hover { background: %(text_faint)s; }
 QScrollBar:horizontal { background: transparent; height: 8px; }
 QScrollBar::handle:horizontal { background: %(border_light)s; border-radius: 4px; min-width: 24px; }
+QTableWidget, QListWidget {
+    background-color: %(bg_card)s;
+    alternate-background-color: %(bg_panel)s;
+    border: 1px solid %(border)s;
+    border-radius: 6px;
+    color: %(text)s;
+    gridline-color: %(border)s;
+    selection-background-color: %(accent)s;
+    selection-color: %(accent_text)s;
+}
+QListWidget::item { padding: 4px 6px; border-radius: 4px; }
+QListWidget::item:selected { background-color: %(accent)s; color: %(accent_text)s; }
+QTableWidget::item { padding: 3px 4px; }
+QHeaderView::section {
+    background-color: %(bg_panel)s;
+    color: %(text_dim)s;
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 1px solid %(border)s;
+    border-right: 1px solid %(border)s;
+    font-weight: 600;
+}
+QTableCornerButton::section { background-color: %(bg_panel)s; border: none; }
+QSplitter::handle { background-color: %(border)s; }
+QSplitter::handle:horizontal { width: 2px; }
+QSplitter::handle:vertical { height: 2px; }
+QSplitter::handle:hover { background-color: %(accent)s; }
+QFrame#sidebarCard QLabel { color: %(text)s; }
 QMenu { background-color: %(bg_elevated)s; border: 1px solid %(border)s; border-radius: 8px; padding: 4px; }
 QMenu::item { padding: 6px 22px 6px 12px; border-radius: 5px; color: %(text)s; }
 QMenu::item:selected { background-color: %(accent)s; color: %(accent_text)s; }
@@ -1071,7 +1099,12 @@ class SawitChanWidget(QLabel):
         self.state = 'walk'
         self.direction = 'right'
         self.current_frame = 0
-        self.x_pos = 450.0  # Start on the empty part of the toolbar
+        _toolbar_w = 450
+        try:
+            _toolbar_w = parent.toolbar.sizeHint().width()
+        except Exception:
+            pass
+        self.x_pos = _toolbar_w + 30.0  # otomatis nyesuaiin lebar toolbar asli (berapa pun jumlah tombolnya)
         self.y_pos = 63     # Centered vertically in the 46px toolbar (y: 60-106)
         self.speed = 0.5    # Pixels per frame step
         
@@ -1108,7 +1141,8 @@ class SawitChanWidget(QLabel):
         self.state_timer.start(8000) # Re-evaluate state every 8 seconds
         
         self.update_display()
-        self.show()
+        if any(self.sprites.values()):
+            self.show()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1201,97 +1235,89 @@ class SawitChanWidget(QLabel):
         self.update_display()
 
     def load_and_process_sprites(self):
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        path = os.path.join(base_dir, "sawit-chan.png")
-        if not os.path.exists(path):
-            path = r"C:\Users\user\Downloads\Savvision\sawit-chan.png"
-            
-        if not os.path.exists(path):
+        import sys as _sys
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "sawit-chan.png"),
+            os.path.join(os.getcwd(), "sawit-chan.png"),
+            r"C:\Users\user\Downloads\Savvision\sawit-chan.png",
+        ]
+        if getattr(_sys, "frozen", False):
+            # Jalan sebagai .exe hasil PyInstaller: __file__ nunjuk ke folder temp _MEIxxxx,
+            # cek juga folder tempat .exe itu sendiri berada.
+            candidates.insert(0, os.path.join(os.path.dirname(_sys.executable), "sawit-chan.png"))
+            if hasattr(_sys, "_MEIPASS"):
+                candidates.insert(0, os.path.join(_sys._MEIPASS, "sawit-chan.png"))
+
+        path = next((c for c in candidates if os.path.exists(c)), None)
+        if path is None:
+            print("[sawit-chan] File sawit-chan.png TIDAK ditemukan. Dicek di:")
+            for c in candidates:
+                print("   -", c)
             self.hide()
             return
-            
-        img = cv2.imread(path)
-        if img is None:
-            self.hide()
-            return
-            
-        cell_w = 172
-        cell_h = 180
-        col_start = 32
-        row_starts = [20, 200, 395]  # Row 0: idle, Row 1: walk, Row 2: interact
-        
-        target_w, target_h = 32, 40
-        
-        # Load idle and walk
-        for row_idx, row_name in [(0, 'idle'), (1, 'walk')]:
-            for col in range(4):
-                rx = col_start + col * cell_w
-                ry = row_starts[row_idx]
-                
-                crop = img[ry:ry+155, rx:rx+120]
-                
-                # Transparentize using HSV
+
+        try:
+            img = cv2.imread(path)
+            if img is None:
+                print(f"[sawit-chan] File ketemu di '{path}' tapi cv2.imread gagal baca "
+                      f"(file corrupt / format gak didukung / path ada karakter aneh).")
+                self.hide()
+                return
+
+            print(f"[sawit-chan] OK, load dari: {path}  (ukuran gambar: {img.shape[1]}x{img.shape[0]})")
+
+            cell_w = 172
+            cell_h = 180
+            col_start = 32
+            row_starts = [20, 200, 395]  # Row 0: idle, Row 1: walk, Row 2: interact
+            target_w, target_h = 32, 40
+
+            def _process_cell(rx, ry):
+                crop = img[ry:ry + 155, rx:rx + 120]
+                if crop.size == 0 or crop.shape[0] < 10 or crop.shape[1] < 10:
+                    raise ValueError(
+                        f"Crop kosong/kekecilan di rx={rx}, ry={ry} (gambar cuma {img.shape[1]}x{img.shape[0]}, "
+                        f"berarti koordinat sprite-sheet gak cocok sama ukuran file sawit-chan.png sekarang)."
+                    )
                 hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
                 h_val, s_val, v_val = cv2.split(hsv)
                 bg_mask = (s_val < 35) & (v_val > 60)
-                
                 alpha = np.ones(crop.shape[:2], dtype=np.uint8) * 255
                 alpha[bg_mask] = 0
-                
                 num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(alpha)
                 for i in range(1, num_labels):
                     if stats[i, cv2.CC_STAT_AREA] < 15:
                         alpha[labels == i] = 0
-                        
                 rgba = cv2.cvtColor(crop, cv2.COLOR_BGR2BGRA)
                 rgba[:, :, 3] = alpha
-                
                 h_crop, w_crop, _ = rgba.shape
                 rgba = np.ascontiguousarray(rgba)
                 qimg = QImage(rgba.data, w_crop, h_crop, w_crop * 4, QImage.Format.Format_ARGB32)
                 pixmap = QPixmap.fromImage(qimg.copy())
-                
-                scaled_pixmap = pixmap.scaled(
+                return pixmap.scaled(
                     target_w, target_h,
                     Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.FastTransformation
+                    Qt.TransformationMode.FastTransformation,
                 )
-                self.sprites[row_name].append(scaled_pixmap)
-                
-        # Load interact (Row 2, Cols 3 and 4)
-        for col in [3, 4]:
-            rx = col_start + col * cell_w
-            ry = row_starts[2]
-            
-            crop = img[ry:ry+155, rx:rx+120]
-            
-            # Transparentize using HSV
-            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            h_val, s_val, v_val = cv2.split(hsv)
-            bg_mask = (s_val < 35) & (v_val > 60)
-            
-            alpha = np.ones(crop.shape[:2], dtype=np.uint8) * 255
-            alpha[bg_mask] = 0
-            
-            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(alpha)
-            for i in range(1, num_labels):
-                if stats[i, cv2.CC_STAT_AREA] < 15:
-                    alpha[labels == i] = 0
-                    
-            rgba = cv2.cvtColor(crop, cv2.COLOR_BGR2BGRA)
-            rgba[:, :, 3] = alpha
-            
-            h_crop, w_crop, _ = rgba.shape
-            rgba = np.ascontiguousarray(rgba)
-            qimg = QImage(rgba.data, w_crop, h_crop, w_crop * 4, QImage.Format.Format_ARGB32)
-            pixmap = QPixmap.fromImage(qimg.copy())
-            
-            scaled_pixmap = pixmap.scaled(
-                target_w, target_h,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.FastTransformation
-            )
-            self.sprites['interact'].append(scaled_pixmap)
+
+            for row_idx, row_name in [(0, 'idle'), (1, 'walk')]:
+                for col in range(4):
+                    rx = col_start + col * cell_w
+                    ry = row_starts[row_idx]
+                    self.sprites[row_name].append(_process_cell(rx, ry))
+
+            for col in [3, 4]:
+                rx = col_start + col * cell_w
+                ry = row_starts[2]
+                self.sprites['interact'].append(_process_cell(rx, ry))
+
+            print(f"[sawit-chan] Sprite siap: idle={len(self.sprites['idle'])}, "
+                  f"walk={len(self.sprites['walk'])}, interact={len(self.sprites['interact'])}")
+
+        except Exception as e:
+            print(f"[sawit-chan] GAGAL proses sprite: {e}")
+            self.hide()
+            return
 
     def next_frame(self):
         frames = self.sprites.get(self.state, [])
@@ -1320,7 +1346,8 @@ class SawitChanWidget(QLabel):
             return
             
         parent_w = self.parent().width()
-        min_x = 420  # Avoid toolbar buttons on the left
+        toolbar = getattr(self.parent(), "toolbar", None)
+        min_x = (toolbar.sizeHint().width() + 20) if toolbar is not None else 420
         max_x = parent_w - self.width() - 10
         
         if max_x <= min_x:
@@ -2209,7 +2236,19 @@ class MainWindow(QMainWindow):
             model_stem = Path(self.model_edit.text()).stem if hasattr(self, 'model_edit') else "model"
             out_stem = f"centroid_{stem}__{model_stem}"
 
-            out_dir = Path(self.settings.value("output_dir", "")) if self.settings.value("output_dir", "") else Path(self.raster_path).parent
+            # PENTING: pakai folder yang SAMA PERSIS dengan tempat shapefile hasil
+            # deteksi baru saja disimpan (result.shp_path), supaya centroid otomatis
+            # selalu muncul berdampingan dengan hasil deteksi. Sebelumnya kode ini
+            # membaca ulang QSettings("output_dir") yang bisa berbeda/basi dari
+            # folder output yang benar-benar dipakai saat proses run (yang diambil
+            # langsung dari self.output_dir_edit), sehingga file centroid tersimpan
+            # ke folder lain dan terlihat seperti "tidak keluar output".
+            if getattr(result, "shp_path", None):
+                out_dir = Path(result.shp_path).parent
+            elif getattr(self, "output_dir_edit", None) and self.output_dir_edit.text().strip():
+                out_dir = Path(self.output_dir_edit.text().strip())
+            else:
+                out_dir = Path(self.raster_path).parent
             out_dir.mkdir(parents=True, exist_ok=True)
 
             # --- GeoJSON Point ---
