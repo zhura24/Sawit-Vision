@@ -3,6 +3,8 @@ numpy
 opencv-python
 rasterio
 pyshp
+scipy
+openpyxl
 ultralytics
 pyinstaller
 

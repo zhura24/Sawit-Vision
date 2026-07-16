@@ -41,14 +41,15 @@ from PyQt6.QtWidgets import (
     QGraphicsScene, QGraphicsView, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSlider, QSpinBox, QSplitter, QStatusBar, QToolBar,
-    QToolButton, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
+    QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from inference_core import (
     CancelledError, InferenceEngine, build_preview_bgr, is_multiref_schema,
     load_band_stats, load_detection_from_shapefile,
 )
+from comparison_widget import ComparisonPage
 
 # ============================================================
 # IDENTITAS APLIKASI
@@ -323,6 +324,21 @@ def _draw_close(p, s, c):
     p.drawLine(QPointF(s * 0.74, s * 0.26), QPointF(s * 0.26, s * 0.74))
 
 
+def _draw_compare(p, s, c):
+    """Ikon 'pembanding model': dua batang chart berdampingan + panah dua arah."""
+    p.setBrush(QBrush(c))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRect(QRectF(s * 0.16, s * 0.44, s * 0.16, s * 0.40))
+    p.drawRect(QRectF(s * 0.42, s * 0.24, s * 0.16, s * 0.60))
+    p.drawRect(QRectF(s * 0.68, s * 0.56, s * 0.16, s * 0.28))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    pen = p.pen()
+    p.setPen(pen)
+    p.drawLine(QPointF(s * 0.14, s * 0.14), QPointF(s * 0.86, s * 0.14))
+    p.drawLine(QPointF(s * 0.14, s * 0.14), QPointF(s * 0.22, s * 0.08))
+    p.drawLine(QPointF(s * 0.14, s * 0.14), QPointF(s * 0.22, s * 0.20))
+
+
 _ICON_DRAWERS = {
     "raster": _draw_raster, "model": _draw_model, "bandstats": _draw_bandstats,
     "run": _draw_run, "stop": _draw_stop, "export": _draw_export, "clear": _draw_clear,
@@ -333,6 +349,7 @@ _ICON_DRAWERS = {
     "target": _draw_target, "percent": _draw_percent, "clock": _draw_clock,
     "grid": _draw_grid, "chevron_down": _draw_chevron_down,
     "chevron_right": _draw_chevron_right, "close": _draw_close,
+    "compare": _draw_compare,
 }
 
 
@@ -1498,6 +1515,14 @@ class MainWindow(QMainWindow):
         self.act_load_result.setStatusTip("Memuat hasil deteksi lama dari file .shp")
         self.act_load_result.triggered.connect(self.load_existing_result)
 
+        self.act_model_comparison = QAction("Pembanding Model", self)
+        self.act_model_comparison.setToolTip("Pembanding Model")
+        self.act_model_comparison.setStatusTip(
+            "Bandingkan centroid manual vs beberapa hasil inference model AI"
+        )
+        self.act_model_comparison.setCheckable(True)
+        self.act_model_comparison.toggled.connect(self.toggle_comparison_page)
+
         for a in (self.act_open_raster, self.act_load_model, self.act_band_stats):
             self.toolbar.addAction(a)
         self.toolbar.addSeparator()
@@ -1524,6 +1549,8 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
         for a in (self.act_clear, self.act_load_result):
             self.toolbar.addAction(a)
+        self.toolbar.addSeparator()
+        self.toolbar.addAction(self.act_model_comparison)
 
         outer.addWidget(self.toolbar)
 
@@ -1568,7 +1595,15 @@ class MainWindow(QMainWindow):
         content_split.setStretchFactor(1, 1)
         content_split.setSizes([340, 1100])
 
-        outer.addWidget(content_split, 1)
+        # ---- Stack halaman: 0 = Deteksi, 1 = Pembanding Model ----
+        self.detection_page = content_split
+        self.comparison_page = ComparisonPage()
+
+        self.content_stack = QStackedWidget()
+        self.content_stack.addWidget(self.detection_page)
+        self.content_stack.addWidget(self.comparison_page)
+
+        outer.addWidget(self.content_stack, 1)
 
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
@@ -1862,6 +1897,9 @@ class MainWindow(QMainWindow):
         self.act_clear.setIcon(Icons.icon("clear", text_color, 20))
         self.act_load_result.setIcon(Icons.icon("folder", text_color, 20))
         self.export_btn.setIcon(Icons.icon("export", text_color, 20))
+        self.act_model_comparison.setIcon(
+            Icons.icon("compare", accent if self.act_model_comparison.isChecked() else text_color, 20)
+        )
 
         self.btn_zoom_in.setIcon(Icons.icon("zoom_in", text_color, 16))
         self.btn_zoom_out.setIcon(Icons.icon("zoom_out", text_color, 16))
@@ -2039,6 +2077,18 @@ class MainWindow(QMainWindow):
         ready = all([self.model_path, self.stats_path, self.raster_path])
         self.run_btn.setEnabled(ready)
         self.act_run.setEnabled(ready)
+
+    def toggle_comparison_page(self, checked: bool):
+        """Pindah antara halaman Deteksi (0) dan halaman Pembanding Model (1)."""
+        if checked:
+            self.content_stack.setCurrentWidget(self.comparison_page)
+            self.statusBar().showMessage(
+                "Mode Pembanding Model — bandingkan centroid manual vs hasil inference beberapa model."
+            )
+        else:
+            self.content_stack.setCurrentWidget(self.detection_page)
+            self.statusBar().showMessage("Siap.")
+        self._apply_theme()  # refresh warna ikon compare (aktif/tidak)
 
     def load_existing_result(self):
         path, _ = QFileDialog.getOpenFileName(
