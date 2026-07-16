@@ -324,6 +324,33 @@ def _draw_close(p, s, c):
     p.drawLine(QPointF(s * 0.74, s * 0.26), QPointF(s * 0.26, s * 0.74))
 
 
+def _draw_file(p, s, c):
+    p.drawPolyline(_poly([
+        (s * 0.28, s * 0.12), (s * 0.6, s * 0.12), (s * 0.76, s * 0.28), (s * 0.76, s * 0.88),
+        (s * 0.28, s * 0.88), (s * 0.28, s * 0.12),
+    ]))
+    p.drawPolyline(_poly([(s * 0.6, s * 0.12), (s * 0.6, s * 0.28), (s * 0.76, s * 0.28)]))
+    p.drawLine(QPointF(s * 0.38, s * 0.5), QPointF(s * 0.66, s * 0.5))
+    p.drawLine(QPointF(s * 0.38, s * 0.64), QPointF(s * 0.66, s * 0.64))
+
+
+def _draw_add(p, s, c):
+    p.drawLine(QPointF(s * 0.5, s * 0.18), QPointF(s * 0.5, s * 0.82))
+    p.drawLine(QPointF(s * 0.18, s * 0.5), QPointF(s * 0.82, s * 0.5))
+
+
+def _draw_trash(p, s, c):
+    p.drawLine(QPointF(s * 0.2, s * 0.28), QPointF(s * 0.8, s * 0.28))
+    p.drawLine(QPointF(s * 0.38, s * 0.28), QPointF(s * 0.4, s * 0.16))
+    p.drawLine(QPointF(s * 0.4, s * 0.16), QPointF(s * 0.6, s * 0.16))
+    p.drawLine(QPointF(s * 0.6, s * 0.16), QPointF(s * 0.62, s * 0.28))
+    p.drawPolyline(_poly([
+        (s * 0.28, s * 0.32), (s * 0.32, s * 0.86), (s * 0.68, s * 0.86), (s * 0.72, s * 0.32),
+    ]))
+    p.drawLine(QPointF(s * 0.42, s * 0.42), QPointF(s * 0.44, s * 0.76))
+    p.drawLine(QPointF(s * 0.58, s * 0.42), QPointF(s * 0.56, s * 0.76))
+
+
 def _draw_compare(p, s, c):
     """Ikon 'pembanding model': dua batang chart berdampingan + panah dua arah."""
     p.setBrush(QBrush(c))
@@ -349,7 +376,7 @@ _ICON_DRAWERS = {
     "target": _draw_target, "percent": _draw_percent, "clock": _draw_clock,
     "grid": _draw_grid, "chevron_down": _draw_chevron_down,
     "chevron_right": _draw_chevron_right, "close": _draw_close,
-    "compare": _draw_compare,
+    "compare": _draw_compare, "add": _draw_add, "trash": _draw_trash, "file": _draw_file,
 }
 
 
@@ -1625,6 +1652,12 @@ class MainWindow(QMainWindow):
         # ---- Stack halaman: 0 = Deteksi, 1 = Pembanding Model ----
         self.detection_page = content_split
         self.comparison_page = ComparisonPage()
+        # Samakan ikon halaman ini dengan tema aktif saat ini (dark/light),
+        # supaya tidak balik ke ikon default gelap kalau app dibuka dalam mode light.
+        _init_tokens = DARK_TOKENS if self._is_dark else LIGHT_TOKENS
+        self.comparison_page.apply_theme_icons(
+            _init_tokens["text"], _init_tokens["accent"], _init_tokens["accent_text"]
+        )
 
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(self.detection_page)
@@ -1927,6 +1960,8 @@ class MainWindow(QMainWindow):
         self.act_model_comparison.setIcon(
             Icons.icon("compare", accent if self.act_model_comparison.isChecked() else text_color, 20)
         )
+        if hasattr(self, "comparison_page"):
+            self.comparison_page.apply_theme_icons(text_color, accent, tokens["accent_text"])
 
         self.btn_zoom_in.setIcon(Icons.icon("zoom_in", text_color, 16))
         self.btn_zoom_out.setIcon(Icons.icon("zoom_out", text_color, 16))

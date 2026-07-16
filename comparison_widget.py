@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit, QPushButton,
     QFileDialog, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QMessageBox,
     QListWidget, QListWidgetItem, QInputDialog, QHeaderView, QSplitter,
-    QPlainTextEdit, QStyle,
+    QPlainTextEdit,
 )
 
 from model_comparison import read_points_any, evaluate_model, export_comparison_excel
@@ -77,10 +77,36 @@ class ComparisonPage(QWidget):
         self._build_ui()
 
     # ------------------------------------------------------------
-    def _std_icon(self, sp):
-        return self.style().standardIcon(sp)
+    def _icon(self, name: str, color: str = None, size: int = 16):
+        """Ambil ikon custom flat satu-warna yang sama seperti menu utama
+        (bukan ikon bawaan OS), supaya tampilan halaman ini konsisten dengan
+        menu utama. Import ditunda (deferred) untuk menghindari circular
+        import dengan main_window.py yang meng-import ComparisonPage ini."""
+        from main_window import Icons
+        return Icons.icon(name, color or self._icon_color, size)
+
+    def apply_theme_icons(self, text_color: str, accent_color: str, accent_text_color: str = "#ffffff"):
+        """Dipanggil dari MainWindow._apply_theme() supaya ikon di halaman ini
+        ikut berganti warna saat tema dark/light di-toggle, sama seperti ikon
+        di menu utama."""
+        self._icon_color = text_color
+        self._accent_color = accent_color
+        self._accent_text_color = accent_text_color
+        self.btn_manual.setIcon(self._icon("folder", text_color, 16))
+        self.btn_add.setIcon(self._icon("add", text_color, 16))
+        self.btn_remove.setIcon(self._icon("trash", text_color, 16))
+        self.btn_run.setIcon(self._icon("run", accent_text_color, 16))
+        self.btn_export.setIcon(self._icon("export", text_color, 16))
+        for i in range(self.list_models.count()):
+            self.list_models.item(i).setIcon(self._icon("file", text_color, 14))
 
     def _build_ui(self):
+        # Warna default (tema gelap) dipakai saat widget pertama kali dibuat;
+        # akan diperbarui lagi lewat apply_theme_icons() saat tema berganti.
+        self._icon_color = "#eceef0"
+        self._accent_color = "#2fbf71"
+        self._accent_text_color = "#ffffff"
+
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -106,8 +132,8 @@ class ComparisonPage(QWidget):
         self.txt_manual = QLineEdit()
         self.txt_manual.setReadOnly(True)
         self.txt_manual.setPlaceholderText("Belum dipilih (.shp / .gpkg / .geojson)")
-        btn_manual = QPushButton()
-        btn_manual.setIcon(self._std_icon(QStyle.StandardPixmap.SP_DirOpenIcon))
+        btn_manual = self.btn_manual = QPushButton()
+        btn_manual.setIcon(self._icon("folder"))
         btn_manual.setToolTip("Pilih file centroid manual")
         btn_manual.setFixedSize(34, 30)
         btn_manual.clicked.connect(self.pick_manual)
@@ -138,11 +164,11 @@ class ComparisonPage(QWidget):
         lmo.addWidget(self.lbl_empty_hint)
 
         row_btn = QHBoxLayout()
-        btn_add = QPushButton(" Tambah Model")
-        btn_add.setIcon(self._std_icon(QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        btn_add = self.btn_add = QPushButton(" Tambah Model")
+        btn_add.setIcon(self._icon("add"))
         btn_add.clicked.connect(self.add_model)
-        btn_remove = QPushButton()
-        btn_remove.setIcon(self._std_icon(QStyle.StandardPixmap.SP_TrashIcon))
+        btn_remove = self.btn_remove = QPushButton()
+        btn_remove.setIcon(self._icon("trash"))
         btn_remove.setToolTip("Hapus model terpilih")
         btn_remove.setFixedWidth(40)
         btn_remove.clicked.connect(self.remove_model)
@@ -178,13 +204,13 @@ class ComparisonPage(QWidget):
 
         self.btn_run = QPushButton("Jalankan Perbandingan")
         self.btn_run.setObjectName("runButton")
-        self.btn_run.setIcon(self._std_icon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.btn_run.setIcon(self._icon("run", self._accent_text_color))
         self.btn_run.setMinimumHeight(36)
         self.btn_run.clicked.connect(self.run_comparison)
         sv.addWidget(self.btn_run)
 
         self.btn_export = QPushButton("Export ke Excel...")
-        self.btn_export.setIcon(self._std_icon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.btn_export.setIcon(self._icon("export"))
         self.btn_export.setEnabled(False)
         self.btn_export.clicked.connect(self.export_excel)
         sv.addWidget(self.btn_export)
@@ -239,7 +265,7 @@ class ComparisonPage(QWidget):
         name = name.strip()
         self.model_entries.append((name, path))
         item = QListWidgetItem(f"{name}  \u2014  {os.path.basename(path)}")
-        item.setIcon(self._std_icon(QStyle.StandardPixmap.SP_FileIcon))
+        item.setIcon(self._icon("file", size=14))
         self.list_models.addItem(item)
         self._update_empty_hint()
 
