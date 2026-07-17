@@ -87,26 +87,88 @@ def pad_tile_for_inference(tile_hwc: np.ndarray, target_size: int = 640) -> np.n
     return np.pad(tile_hwc, ((0, pad_h), (0, pad_w), (0, 0)), mode="constant", constant_values=0)
 
 
-def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5):
+def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5,
+               centroid_dist_threshold: float = None):
+    """
+    NMS untuk menghapus deteksi duplikat di area overlap antar tile.
+
+    Root cause duplikat di tepi tile: satu pohon yang sama bisa terdeteksi dua kali
+    dari dua tile yang overlap, dengan bounding box yang SEDIKIT bergeser (bukan
+    persis sama posisinya) -- misalnya kanopi sedikit terpotong di salah satu tile --
+    sehingga IoU-nya kadang jatuh DI BAWAH iou_threshold biasa meski itu pohon yang sama.
+
+    Untuk menutup celah itu, ditambahkan fallback: box dianggap duplikat juga kalau
+    jarak centroid-nya cukup dekat (<= centroid_dist_threshold piksel), meskipun IoU
+    rendah. Kalau centroid_dist_threshold=None, perilaku identik dengan NMS lama
+    (murni IoU).
+    """
     if len(boxes) == 0:
         return []
     x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
     areas = (x2 - x1) * (y2 - y1)
+
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+
     order = scores.argsort()[::-1]
     keep = []
     while order.size > 0:
         i = order[0]
         keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
+
+        rest = order[1:]
+
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
         w = np.maximum(0.0, xx2 - xx1)
         h = np.maximum(0.0, yy2 - yy1)
         inter = w * h
-        iou = inter / (areas[i] + areas[order[1:]] - inter)
-        order = order[1:][iou <= iou_threshold]
+        iou = inter / (areas[i] + areas[rest] - inter)
+
+        is_duplicate = iou > iou_threshold
+
+        if centroid_dist_threshold is not None:
+            dist = np.sqrt((cx[i] - cx[rest]) ** 2 + (cy[i] - cy[rest]) ** 2)
+            is_duplicate = is_duplicate | (dist <= centroid_dist_threshold)
+
+        order = rest[~is_duplicate]
     return keep
+
+
+def estimate_centroid_dist_threshold(boxes: np.ndarray, factor: float = 0.5,
+                                      min_detections: int = 20,
+                                      fallback: float = 15.0, log=print) -> float:
+    """
+    Estimasi otomatis centroid_dist_threshold dari ukuran box hasil deteksi itu
+    sendiri (sebelum NMS) -- bukan angka piksel hardcoded.
+
+    Dimensi box yang dihasilkan model adalah proxy langsung untuk ukuran kanopi
+    sawit DI RESOLUSI RASTER INI, jadi threshold otomatis menyesuaikan kalau raster
+    beda GSD (resolusi piksel), tanpa perlu tuning ulang manual tiap raster.
+
+    Pakai MEDIAN (bukan mean) supaya tidak gampang terpengaruh outlier (mis. box
+    salah deteksi yang ukurannya tidak wajar).
+
+    factor: pengali terhadap diagonal box (0.5 = radius kanopi, dari diameter).
+    min_detections: kalau jumlah deteksi kurang dari ini, statistik dianggap belum
+        cukup stabil untuk dipercaya -> pakai fallback.
+    """
+    if len(boxes) < min_detections:
+        log(f"[NMS] Deteksi terlalu sedikit ({len(boxes)}) untuk auto-estimate, "
+            f"pakai fallback: {fallback:.1f}px")
+        return fallback
+
+    box_w = boxes[:, 2] - boxes[:, 0]
+    box_h = boxes[:, 3] - boxes[:, 1]
+    diag = np.sqrt(box_w ** 2 + box_h ** 2)
+    median_diag = float(np.median(diag))
+    threshold = median_diag * factor
+
+    log(f"[NMS] Auto-estimate centroid_dist_threshold dari {len(boxes)} box: "
+        f"median diagonal={median_diag:.2f}px, faktor={factor} -> threshold={threshold:.2f}px")
+    return threshold
 
 
 def auto_detect_band_mapping(src, band_stats: dict, log=print) -> dict:
@@ -345,7 +407,14 @@ class InferenceEngine:
 
     def run(self, raster_path: str, conf: float = 0.25, tile_size: int = 640,
             overlap: int = 64, iou_threshold: float = 0.5,
+            centroid_dist_factor: float = 0.5,
             output_dir: str = None, batch_size: int = 8, out_name: str = None) -> InferenceResult:
+        """
+        centroid_dist_factor: faktor pengali terhadap median diagonal box untuk
+            fallback centroid-distance di NMS (menutup duplikat tepi tile yang
+            lolos dari IoU biasa). Set None untuk menonaktifkan (NMS murni IoU,
+            perilaku lama).
+        """
         if self.model is None:
             self.load()
 
@@ -469,7 +538,15 @@ class InferenceEngine:
         all_classes = np.concatenate(all_classes, axis=0)
 
         self.log_fn(f"Total deteksi sebelum NMS: {len(all_boxes)}")
-        keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold)
+
+        centroid_dist_threshold = None
+        if centroid_dist_factor is not None:
+            centroid_dist_threshold = estimate_centroid_dist_threshold(
+                all_boxes, factor=centroid_dist_factor, log=self.log_fn,
+            )
+
+        keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold,
+                               centroid_dist_threshold=centroid_dist_threshold)
         final_boxes = all_boxes[keep_idx]
         final_scores = all_scores[keep_idx]
         final_classes = all_classes[keep_idx]

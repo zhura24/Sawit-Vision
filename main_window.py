@@ -681,7 +681,8 @@ class InferenceWorker(QObject):
     failed = pyqtSignal(str)
 
     def __init__(self, model_path, stats_path, raster_path, conf, tile_size,
-                 overlap, batch_size=8, output_dir=None, out_name=None, force_cpu=False):
+                 overlap, batch_size=8, output_dir=None, out_name=None, force_cpu=False,
+                 centroid_dist_factor=0.5):
         super().__init__()
         self.model_path = model_path
         self.stats_path = stats_path
@@ -693,6 +694,7 @@ class InferenceWorker(QObject):
         self.output_dir = output_dir
         self.out_name = out_name
         self.force_cpu = force_cpu
+        self.centroid_dist_factor = centroid_dist_factor
         self._cancelled = False
         self._prev_cuda_visible = None
 
@@ -715,6 +717,7 @@ class InferenceWorker(QObject):
             result = engine.run(
                 self.raster_path, conf=self.conf,
                 tile_size=self.tile_size, overlap=self.overlap,
+                centroid_dist_factor=self.centroid_dist_factor,
                 batch_size=self.batch_size, output_dir=self.output_dir,
                 out_name=self.out_name,
             )
@@ -1881,6 +1884,30 @@ class MainWindow(QMainWindow):
         param_form.addRow("Batch size:", self.batch_spin)
 
         from PyQt6.QtWidgets import QCheckBox
+
+        self.chk_centroid_nms = QCheckBox("Gabung duplikat tepi tile (centroid-distance)")
+        self.chk_centroid_nms.setChecked(True)
+        self.chk_centroid_nms.setToolTip(
+            "Selain IoU, NMS antar-tile juga akan menganggap dua deteksi sebagai\n"
+            "objek yang sama kalau jarak titik tengahnya (centroid) berdekatan --\n"
+            "menutup kasus duplikat di tepi tile yang lolos dari IoU biasa karena\n"
+            "kanopi sedikit terpotong di salah satu tile.\n"
+            "Radius jarak dihitung otomatis dari ukuran box hasil deteksi (bukan\n"
+            "angka piksel tetap), jadi menyesuaikan resolusi raster."
+        )
+        lay_param.addWidget(self.chk_centroid_nms)
+
+        self.centroid_factor_spin = QDoubleSpinBox()
+        self.centroid_factor_spin.setRange(0.1, 1.0)
+        self.centroid_factor_spin.setSingleStep(0.05)
+        self.centroid_factor_spin.setValue(0.5)
+        self.centroid_factor_spin.setToolTip(
+            "Faktor pengali terhadap median diagonal box (0.5 = radius kanopi).\n"
+            "Naikkan kalau masih ada duplikat di tepi tile; turunkan kalau pohon\n"
+            "berdempetan yang legit malah ikut ter-gabung jadi satu."
+        )
+        param_form.addRow("Faktor radius gabung:", self.centroid_factor_spin)
+        self.chk_centroid_nms.toggled.connect(self.centroid_factor_spin.setEnabled)
         self.chk_export_centroid = QCheckBox("Ekspor titik tengah (centroid) otomatis")
         self.chk_export_centroid.setToolTip(
             "Jika dicentang, setelah deteksi selesai akan otomatis menyimpan\n"
@@ -2028,11 +2055,16 @@ class MainWindow(QMainWindow):
         conf = self.settings.value("conf", 0.25, type=float)
         batch = self.settings.value("batch_size", 8, type=int)
         output_dir = self.settings.value("output_dir", "", type=str)
+        centroid_nms_enabled = self.settings.value("centroid_nms_enabled", True, type=bool)
+        centroid_factor = self.settings.value("centroid_dist_factor", 0.5, type=float)
         self.tile_spin.setValue(tile)
         self.overlap_spin.setValue(overlap)
         self.conf_slider.setValue(int(round(conf * 100)))
         self.batch_spin.setValue(batch)
         self.output_dir_edit.setText(output_dir)
+        self.chk_centroid_nms.setChecked(centroid_nms_enabled)
+        self.centroid_factor_spin.setValue(centroid_factor)
+        self.centroid_factor_spin.setEnabled(centroid_nms_enabled)
 
     def _persist_current_settings(self):
         self.settings.setValue("tile_size", self.tile_spin.value())
@@ -2040,6 +2072,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("conf", self.conf_slider.value() / 100.0)
         self.settings.setValue("batch_size", self.batch_spin.value())
         self.settings.setValue("output_dir", self.output_dir_edit.text().strip())
+        self.settings.setValue("centroid_nms_enabled", self.chk_centroid_nms.isChecked())
+        self.settings.setValue("centroid_dist_factor", self.centroid_factor_spin.value())
 
     # ------------------------------------------------------
     # OUTPUT (nama & folder tujuan, ditentukan sebelum run)
@@ -2213,6 +2247,9 @@ class MainWindow(QMainWindow):
         output_dir = self.output_dir_edit.text().strip() or None
         out_name = self.output_name_edit.text().strip() or None
         force_cpu = self.settings.value("force_cpu", False, type=bool)
+        centroid_dist_factor = (
+            self.centroid_factor_spin.value() if self.chk_centroid_nms.isChecked() else None
+        )
 
         import time as _time
         self._run_start_time = _time.time()
@@ -2222,6 +2259,7 @@ class MainWindow(QMainWindow):
             self.model_path, self.stats_path, self.raster_path,
             conf, tile_size, overlap, batch_size,
             output_dir=output_dir, out_name=out_name, force_cpu=force_cpu,
+            centroid_dist_factor=centroid_dist_factor,
         )
         self.worker.moveToThread(self.thread)
 
