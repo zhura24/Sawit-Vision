@@ -2305,9 +2305,20 @@ class MainWindow(QMainWindow):
                 transform = src.transform
                 crs = src.crs
 
-            stem = Path(self.raster_path).stem
-            model_stem = Path(self.model_edit.text()).stem if hasattr(self, 'model_edit') else "model"
-            out_stem = f"centroid_{stem}__{model_stem}"
+            # PENTING: nama file centroid HARUS ikut nama shapefile hasil deteksi
+            # (result.shp_path) -- itu satu-satunya sumber kebenaran nama output,
+            # baik saat user isi "Nama Output" custom (mis. "rgb model") maupun
+            # saat dibiarkan kosong (fallback ke "deteksi_<raster>__<model>").
+            # Sebelumnya kode ini menghitung ulang nama sendiri dari
+            # raster_stem + model_stem, sehingga mengabaikan Nama Output custom
+            # dan file centroid keluar dengan nama lama/berbeda dari shapefile.
+            if getattr(result, "shp_path", None):
+                base_stem = Path(result.shp_path).stem
+            else:
+                stem = Path(self.raster_path).stem
+                model_stem = Path(self.model_edit.text()).stem if hasattr(self, 'model_edit') else "model"
+                base_stem = f"{stem}__{model_stem}"
+            out_stem = f"centroid_{base_stem}"
 
             # PENTING: pakai folder yang SAMA PERSIS dengan tempat shapefile hasil
             # deteksi baru saja disimpan (result.shp_path), supaya centroid otomatis
