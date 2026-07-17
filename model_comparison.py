@@ -19,7 +19,7 @@ import numpy as np
 import shapefile  # pyshp
 from scipy.spatial import cKDTree
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 SUPPORTED_EXTS = (".shp", ".gpkg", ".geojson", ".json")
@@ -241,6 +241,158 @@ def _safe_sheet_name(name: str, used: set) -> str:
     return candidate
 
 
+# ============================================================
+# STYLING HELPERS -- dipakai bersama oleh semua sheet biar tampilannya
+# konsisten dan lebih enak dibaca (rapi, tidak berantakan).
+# ============================================================
+_COLOR_HEADER_FILL = "2FBF71"     # hijau brand Sawit Vision
+_COLOR_HEADER_TEXT = "FFFFFF"
+_COLOR_BORDER = "D9D9D9"
+_COLOR_BAND = "F2F9F6"            # selang-seling baris (banding) supaya mudah diikuti mata
+_COLOR_BEST = "C6EFCE"            # highlight model terbaik (F1 tertinggi)
+_COLOR_TP = "E2F0D9"              # hijau muda -> deteksi benar
+_COLOR_FP = "FCE4E4"              # merah muda -> deteksi salah/duplikat
+_COLOR_FN = "FFF2CC"              # kuning muda -> pohon manual yang tidak ketemu
+
+_THIN = Side(style="thin", color=_COLOR_BORDER)
+_BORDER_ALL = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
+
+
+def _style_header_row(ws, row_idx: int = 1, n_cols: int = None):
+    n_cols = n_cols or ws.max_column
+    ws.row_dimensions[row_idx].height = 22
+    for col_idx in range(1, n_cols + 1):
+        cell = ws.cell(row=row_idx, column=col_idx)
+        cell.font = Font(bold=True, color=_COLOR_HEADER_TEXT)
+        cell.fill = PatternFill("solid", fgColor=_COLOR_HEADER_FILL)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = _BORDER_ALL
+
+
+def _apply_borders(ws, min_row=1, max_row=None, min_col=1, max_col=None):
+    max_row = max_row or ws.max_row
+    max_col = max_col or ws.max_column
+    for row in ws.iter_rows(min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col):
+        for cell in row:
+            cell.border = _BORDER_ALL
+
+
+def _apply_row_banding(ws, header_row: int, last_row: int, n_cols: int, skip_fill=None):
+    """Kasih warna selang-seling ke baris data (bukan header) supaya baris demi baris
+    lebih gampang diikuti mata saat scroll data yang panjang. skip_fill: set baris
+    (nomor absolut) yang TIDAK boleh ditimpa banding (mis. baris yang sudah di-highlight)."""
+    skip_fill = skip_fill or set()
+    for r in range(header_row + 1, last_row + 1):
+        if r in skip_fill:
+            continue
+        if (r - header_row) % 2 == 0:
+            fill = PatternFill("solid", fgColor=_COLOR_BAND)
+            for c in range(1, n_cols + 1):
+                ws.cell(row=r, column=c).fill = fill
+
+
+def _autofit_columns(ws, min_width=10, max_width=42, padding=2, start_row=1):
+    widths = {}
+    for row in ws.iter_rows(min_row=start_row):
+        for cell in row:
+            if cell.value is None:
+                continue
+            length = len(str(cell.value))
+            col = cell.column_letter
+            widths[col] = max(widths.get(col, 0), length)
+    for col, length in widths.items():
+        ws.column_dimensions[col].width = max(min_width, min(max_width, length + padding))
+
+
+def _apply_number_formats(ws, headers, start_row, start_col=1):
+    """Format kolom berdasarkan nama header-nya: persen untuk Precision/Recall/F1,
+    3 desimal untuk kolom jarak (m), integer untuk kolom hitungan (N/TP/FP/FN),
+    4 desimal untuk kolom rata-rata atribut (Avg ...)."""
+    for offset, header in enumerate(headers):
+        col_idx = start_col + offset
+        if header in ("Precision", "Recall", "F1"):
+            fmt = "0.0%"
+        elif header.endswith("(m)"):
+            fmt = "0.000"
+        elif header in ("N Manual", "N Deteksi", "TP", "FP", "FN"):
+            fmt = "0"
+        elif header.startswith("Avg "):
+            fmt = "0.0000"
+        elif header == "distance_m":
+            fmt = "0.000"
+        elif header.endswith("_x") or header.endswith("_y") or header == "confidence":
+            fmt = "0.0000"
+        else:
+            continue
+        for row in ws.iter_rows(min_row=start_row, min_col=col_idx, max_col=col_idx):
+            for cell in row:
+                if cell.value != "" and cell.value is not None:
+                    cell.number_format = fmt
+
+
+def _write_glossary_sheet(wb, threshold: float):
+    """Sheet 'Keterangan': penjelasan istilah & rumus, supaya orang yang baru lihat
+    Excel ini (mis. dosen pembimbing / pihak yang menilai) tidak perlu tanya-tanya
+    arti tiap kolom."""
+    ws = wb.create_sheet("Keterangan")
+    ws.append(["Istilah / Kolom", "Penjelasan"])
+    _style_header_row(ws, n_cols=2)
+
+    rows = [
+        ("N Manual", "Jumlah titik centroid manual (ground truth) yang jadi acuan penilaian."),
+        ("N Deteksi", "Jumlah total titik hasil deteksi model AI (sebelum dicocokkan ke titik manual)."),
+        ("TP (True Positive)",
+         "Deteksi model yang berhasil dipasangkan dengan 1 titik manual dalam radius "
+         f"threshold ({threshold} m). Dianggap deteksi yang BENAR."),
+        ("FP (False Positive)",
+         "Deteksi model yang TIDAK berhasil dipasangkan dengan titik manual manapun "
+         "(dalam radius threshold). Bisa berarti deteksi palsu, objek bukan sawit, "
+         "atau duplikat yang belum ter-suppress."),
+        ("FN (False Negative)",
+         "Titik manual yang TIDAK berhasil ditemukan oleh model manapun. Artinya pohon "
+         "yang seharusnya ada tapi terlewat/tidak terdeteksi."),
+        ("Precision", "Rumus: TP / (TP + FP). Dari SEMUA yang dideteksi model, berapa persen "
+                       "yang benar-benar sawit (bukan deteksi palsu/duplikat)."),
+        ("Recall", "Rumus: TP / (TP + FN). Dari SEMUA pohon yang sebenarnya ada (manual), "
+                    "berapa persen yang berhasil ditemukan model."),
+        ("F1", "Rumus: 2 x (Precision x Recall) / (Precision + Recall). Skor tunggal yang "
+               "menyeimbangkan Precision & Recall -- dipakai sebagai acuan utama membandingkan model."),
+        ("Mean Dist (m)", "Rata-rata jarak (meter) antara titik TP dan pasangan manual-nya. "
+                           "Makin kecil, makin presisi posisi deteksi model."),
+        ("Median Dist (m)", "Nilai tengah dari semua jarak TP. Lebih tahan terhadap outlier "
+                             "dibanding Mean Dist."),
+        ("RMSE Dist (m)", "Root Mean Square Error jarak TP. Lebih sensitif terhadap jarak yang "
+                           "besar (outlier) dibanding Mean Dist -- kalau RMSE jauh lebih besar "
+                           "dari Mean, artinya ada beberapa pasangan yang jaraknya jauh meleset."),
+        ("Max Dist (m)", "Jarak TP terjauh -- kasus pencocokan terburuk pada model ini."),
+        ("Threshold jarak", f"Radius maksimal ({threshold} m) supaya sebuah deteksi dianggap "
+                             "\"cocok\" (match) dengan titik manual terdekatnya."),
+        ("Avg Infer.<kolom>", "Rata-rata nilai atribut numerik (mis. confidence) dari SEMUA "
+                               "deteksi model ini, bukan cuma yang TP."),
+        ("Avg Manual.<kolom> (TP)", "Rata-rata nilai atribut numerik dari titik manual, dihitung "
+                                     "HANYA dari pasangan yang berhasil match (TP)."),
+        ("Catatan \u2605 F1 Tertinggi", "Model dengan skor F1 paling tinggi di antara yang "
+                                         "dibandingkan -- kandidat model terbaik berdasarkan "
+                                         "keseimbangan Precision & Recall."),
+        ("status (sheet Detail)", "TP = deteksi benar (hijau), FP = deteksi salah/duplikat "
+                                   "(merah), FN = pohon manual terlewat (kuning)."),
+    ]
+    for term, desc in rows:
+        ws.append([term, desc])
+
+    for r in range(2, ws.max_row + 1):
+        ws.cell(row=r, column=1).font = Font(bold=True)
+        ws.cell(row=r, column=1).alignment = Alignment(vertical="top", wrap_text=True)
+        ws.cell(row=r, column=2).alignment = Alignment(vertical="top", wrap_text=True)
+        ws.row_dimensions[r].height = 30
+
+    ws.column_dimensions["A"].width = 26
+    ws.column_dimensions["B"].width = 95
+    ws.freeze_panes = "A2"
+    _apply_borders(ws)
+    return ws
+
+
 def export_comparison_excel(output_path, manual_xy, model_results, threshold, manual_attrs=None):
     """
     model_results: list of dict:
@@ -248,10 +400,11 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
          "attrs": list of dict (atribut per titik inference, boleh kosong)}
     manual_attrs: list of dict, atribut per titik centroid manual (boleh None/kosong).
 
-    Menulis 1 sheet ringkasan (buat acuan penilaian antar model) + 1 sheet detail per model.
-    Sheet detail sekarang JOIN atribut tabel manual + inference untuk tiap pasangan TP
-    (bukan cuma koordinat) supaya datanya lengkap/tidak kosong, dan sheet Ringkasan
-    menampilkan rata-rata tiap kolom atribut numerik (mis. confidence) yang berhasil di-join.
+    Struktur workbook:
+      1. Ringkasan   -- tabel utama perbandingan model (dengan highlight F1 tertinggi)
+      2. Keterangan  -- penjelasan istilah & rumus tiap kolom (TP, Precision, dst)
+      3. Info        -- metadata run (threshold, jumlah model, dsb)
+      4. Detail_<model> -- baris per titik (TP/FP/FN) dengan warna status
     """
     manual_attrs = manual_attrs or []
 
@@ -274,14 +427,14 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
 
     avg_headers = [f"Avg Infer.{k}" for k in infer_numeric_keys] + \
                   [f"Avg Manual.{k} (TP)" for k in manual_numeric_keys]
-    headers = base_headers + avg_headers
+    headers = base_headers + avg_headers + ["Catatan"]
     ws.append(headers)
-    for cell in ws[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="2FBF71")
-        cell.alignment = Alignment(horizontal="center")
 
-    for r in model_results:
+    # Model dengan F1 tertinggi di-highlight -- acuan cepat "mana yang terbaik".
+    f1_list = [r["metrics"]["f1"] for r in model_results]
+    best_idx = int(np.argmax(f1_list)) if f1_list else -1
+
+    for i, r in enumerate(model_results):
         m = r["metrics"]
         infer_attrs = r.get("attrs", [])
         row = [
@@ -302,15 +455,37 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
                            if m_idx < len(manual_attrs)]
             avg = _numeric_avg(joined_vals)
             row.append(round(avg, 4) if avg is not None else "")
+        row.append("\u2605 F1 Tertinggi" if i == best_idx else "")
         ws.append(row)
 
-    for col_idx in range(1, len(headers) + 1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = 15
+    last_row = ws.max_row
+    _style_header_row(ws, n_cols=len(headers))
+    _apply_number_formats(ws, headers, start_row=2)
+    _apply_borders(ws, max_row=last_row, max_col=len(headers))
+
+    best_row_abs = 2 + best_idx if best_idx >= 0 else None
+    if best_row_abs:
+        fill = PatternFill("solid", fgColor=_COLOR_BEST)
+        for c in range(1, len(headers) + 1):
+            ws.cell(row=best_row_abs, column=c).fill = fill
+
+    _apply_row_banding(ws, header_row=1, last_row=last_row, n_cols=len(headers),
+                       skip_fill={best_row_abs} if best_row_abs else None)
+    _autofit_columns(ws)
+    ws.freeze_panes = "A2"
+
+    _write_glossary_sheet(wb, threshold)
 
     ws_info = wb.create_sheet("Info")
+    ws_info.append(["Keterangan", "Nilai"])
+    _style_header_row(ws_info, n_cols=2)
     ws_info.append(["Threshold jarak (meter)", threshold])
     ws_info.append(["Jumlah model dibandingkan", len(model_results)])
+    ws_info.append(["Model dengan F1 tertinggi", model_results[best_idx]["name"] if best_idx >= 0 else "-"])
     ws_info.append(["Dibuat oleh", "Sawit Vision - Pembanding Model"])
+    _apply_borders(ws_info)
+    _autofit_columns(ws_info)
+    ws_info.column_dimensions["A"].width = 28
 
     used_names = set()
     for r in model_results:
@@ -336,8 +511,6 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
                       + [f"infer.{k}" for k in infer_attr_keys]
                       + [f"manual.{k}" for k in manual_attr_keys])
         sh.append(header_row)
-        for cell in sh[1]:
-            cell.font = Font(bold=True)
 
         infer_xy = r["xy"]
 
@@ -366,5 +539,27 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
                        float(manual_xy[m_idx][0]), float(manual_xy[m_idx][1])]
                       + [""] * len(infer_attr_keys)
                       + _manual_attr_row(m_idx))
+
+        n_cols = len(header_row)
+        sh_last_row = sh.max_row
+        _style_header_row(sh, n_cols=n_cols)
+        _apply_number_formats(sh, header_row, start_row=2)
+        _apply_borders(sh, max_row=sh_last_row, max_col=n_cols)
+
+        # Warnai tiap baris sesuai status: TP hijau, FP merah, FN kuning --
+        # supaya bisa langsung "dipindai mata" tanpa baca satu-satu.
+        status_fill = {"TP": _COLOR_TP, "FP": _COLOR_FP, "FN": _COLOR_FN}
+        for row_idx in range(2, sh_last_row + 1):
+            status = sh.cell(row=row_idx, column=1).value
+            color = status_fill.get(status)
+            if color:
+                fill = PatternFill("solid", fgColor=color)
+                for c in range(1, n_cols + 1):
+                    ws_cell = sh.cell(row=row_idx, column=c)
+                    if ws_cell.fill.fgColor.rgb in (None, "00000000"):
+                        ws_cell.fill = fill
+
+        _autofit_columns(sh)
+        sh.freeze_panes = "A2"
 
     wb.save(output_path)
