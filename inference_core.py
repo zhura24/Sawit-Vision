@@ -49,7 +49,7 @@ def is_multiref_schema(band_stats: dict) -> bool:
 
 
 def stretch_band(band: np.ndarray, p_low: float, p_high: float) -> np.ndarray:
-    band = band.astype(np.float64)
+    band = band.astype(np.float32)  # float32 cukup (raster & hasil akhir uint8), hemat RAM 2x vs float64
     if p_high - p_low == 0:
         return np.zeros_like(band, dtype=np.uint8)
     clipped = np.clip(band, p_low, p_high)
@@ -89,7 +89,9 @@ def pad_tile_for_inference(tile_hwc: np.ndarray, target_size: int = 640) -> np.n
 
 def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5,
                centroid_dist_threshold: float = None,
-               centroid_dist_factor: float = None):
+               centroid_dist_factor: float = None,
+               max_radius_px: float = None,
+               tile_ids: np.ndarray = None):
     """
     NMS untuk menghapus deteksi duplikat di area overlap antar tile.
 
@@ -111,9 +113,35 @@ def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5
     2. GLOBAL (centroid_dist_threshold, LEGACY): satu radius piksel tetap untuk
        semua pasangan, dihitung sebelumnya dari median diagonal SELURUH box di
        gambar (lihat estimate_centroid_dist_threshold). Dipertahankan untuk
-       backward-compat; kalau raster punya variasi ukuran kanopi besar, mode ini
-       berisiko radius kekecilan untuk kanopi besar (duplikat lolos) atau
-       kegedean untuk kanopi kecil (dua pohon beda malah ke-merge).
+       backward-compat.
+
+    max_radius_px (PENYEIMBANG untuk mode adaptif): batas ATAS pair_threshold,
+       berapa pun hasil "centroid_dist_factor * rata-rata diagonal" pasangan itu.
+       Alasannya: radius adaptif di atas ikut membesar linear terhadap ukuran box,
+       padahal JARAK TANAM ASLI di lapangan (jarak antar batang pohon) TIDAK ikut
+       membesar cuma karena kanopinya sudah dewasa/lebar -- jarak tanam ditentukan
+       saat penanaman, bukan oleh ukuran kanopi saat ini. Akibatnya, kalau raster
+       berisi campuran kanopi kecil & besar dan dipakai satu factor yang sama,
+       pasangan kanopi BESAR bisa dapat radius merge yang lebih besar dari jarak
+       tanam sesungguhnya -> dua pohon dewasa yang benar-benar berbeda individu
+       (tapi berdekatan sesuai jarak tanam normal) berisiko salah dianggap
+       duplikat dan ke-gabung jadi satu (turunin recall). Nilainya dihitung
+       otomatis oleh pemanggil (InferenceEngine.run) dari persentil-90 diagonal
+       SELURUH box hasil deteksi di raster ini -- tidak perlu diisi manual.
+       Radius pasangan kanopi kecil tetap proporsional kecil (di bawah cap,
+       tidak kepotong), sementara radius pasangan kanopi besar dibatasi supaya
+       tidak pernah jauh melebihi ukuran kanopi "wajar" di raster tsb.
+       None = tidak ada batas (perilaku lama, radius adaptif murni).
+
+    tile_ids: array (sepanjang boxes) berisi indeks tile asal tiap box. Kalau
+        diisi, fallback centroid-distance HANYA diterapkan ke pasangan box yang
+        berasal dari tile BERBEDA. Ini penting: duplikat akibat overlap tile
+        cuma mungkin terjadi antar box dari tile berbeda -- dua pohon ASLI yang
+        kebetulan berdekatan tapi terdeteksi dari tile YANG SAMA bukan kasus
+        duplikat tile-boundary, dan tidak boleh ikut ke-merge hanya karena
+        jaraknya kebetulan di bawah radius. Kalau tile_ids=None, fallback
+        diterapkan ke semua pasangan seperti perilaku lama (kurang presisi,
+        berisiko menghapus pohon berdekatan yang sebenarnya beda individu).
 
     Kalau centroid_dist_factor dan centroid_dist_threshold dua-duanya None,
     perilaku identik dengan NMS lama (murni IoU). Kalau dua-duanya diisi,
@@ -152,16 +180,33 @@ def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5
 
         is_duplicate = iou > iou_threshold
 
-        if diag is not None:
-            # Radius per-pasangan: rata-rata diagonal box i & box pasangannya,
-            # jadi kanopi kecil dan besar masing-masing dapat radius yang
-            # proporsional dengan ukurannya sendiri, bukan radius global.
+        if diag is not None or centroid_dist_threshold is not None:
             dist = np.sqrt((cx[i] - cx[rest]) ** 2 + (cy[i] - cy[rest]) ** 2)
-            pair_threshold = centroid_dist_factor * (diag[i] + diag[rest]) / 2.0
-            is_duplicate = is_duplicate | (dist <= pair_threshold)
-        elif centroid_dist_threshold is not None:
-            dist = np.sqrt((cx[i] - cx[rest]) ** 2 + (cy[i] - cy[rest]) ** 2)
-            is_duplicate = is_duplicate | (dist <= centroid_dist_threshold)
+
+            if diag is not None:
+                # Radius per-pasangan: rata-rata diagonal box i & box pasangannya,
+                # jadi kanopi kecil dan besar masing-masing dapat radius yang
+                # proporsional dengan ukurannya sendiri, bukan radius global.
+                pair_threshold = centroid_dist_factor * (diag[i] + diag[rest]) / 2.0
+            else:
+                pair_threshold = centroid_dist_threshold
+
+            if max_radius_px is not None:
+                # Cap supaya radius pasangan kanopi BESAR tidak pernah melebihi
+                # jarak tanam minimum riil -- lihat penjelasan max_radius_px di
+                # docstring. Pasangan kanopi kecil tidak terpengaruh (nilainya
+                # sudah di bawah cap ini).
+                pair_threshold = np.minimum(pair_threshold, max_radius_px)
+
+            centroid_match = dist <= pair_threshold
+
+            if tile_ids is not None:
+                # Fallback jarak cuma valid untuk pasangan LINTAS TILE -- duplikat
+                # tile-boundary memang cuma bisa terjadi antar tile berbeda.
+                cross_tile = tile_ids[i] != tile_ids[rest]
+                centroid_match = centroid_match & cross_tile
+
+            is_duplicate = is_duplicate | centroid_match
 
         order = rest[~is_duplicate]
     return keep
@@ -440,10 +485,19 @@ class InferenceEngine:
             centroid_dist_factor: float = 0.5,
             output_dir: str = None, batch_size: int = 8, out_name: str = None) -> InferenceResult:
         """
-        centroid_dist_factor: faktor pengali terhadap median diagonal box untuk
-            fallback centroid-distance di NMS (menutup duplikat tepi tile yang
-            lolos dari IoU biasa). Set None untuk menonaktifkan (NMS murni IoU,
-            perilaku lama).
+        centroid_dist_factor: faktor pengali terhadap diagonal box untuk fallback
+            centroid-distance di NMS (menutup duplikat tepi tile yang lolos dari
+            IoU biasa). Set None untuk menonaktifkan (NMS murni IoU, perilaku lama).
+
+        Radius merge dihitung ADAPTIF per-pasangan (dari diagonal box pasangan
+        itu sendiri, lihat nms_global), lalu otomatis DIBATASI ke persentil-90
+        diagonal seluruh box di raster ini -- supaya pasangan kanopi yang jauh
+        lebih besar dari kanopi "wajar" di raster tsb tidak dapat radius merge
+        yang kebablasan (bisa salah menggabung dua pohon dewasa berbeda yang
+        cuma kebetulan berdekatan sesuai jarak tanam normal). Ini dihitung
+        otomatis dari statistik deteksi itu sendiri -- tidak perlu input
+        tambahan dari pengguna, dan otomatis menyesuaikan resolusi/skala
+        raster apa pun.
         """
         if self.model is None:
             self.load()
@@ -480,7 +534,7 @@ class InferenceEngine:
             total = len(windows)
             self.log_fn(f"Akan diproses {total} tile ({tile_size}x{tile_size}, overlap {overlap}px)")
 
-            all_boxes, all_scores, all_classes = [], [], []
+            all_boxes, all_scores, all_classes, all_tile_ids = [], [], [], []
 
             def _prepare_tile(x_off, y_off, w, h):
                 """Baca & stretch satu tile dari raster (I/O + CPU, TIDAK menyentuh GPU)."""
@@ -527,7 +581,7 @@ class InferenceEngine:
                 results = self.model.predict(source=tile_batch, device=self.device,
                                               conf=conf, save=False, verbose=False)
                 n_det_total = 0
-                for r, (x_off, y_off) in zip(results, offset_batch):
+                for r, (x_off, y_off, tile_idx) in zip(results, offset_batch):
                     if r.boxes is not None and len(r.boxes) > 0:
                         boxes_xyxy = r.boxes.xyxy.cpu().numpy()
                         scores = r.boxes.conf.cpu().numpy()
@@ -537,6 +591,7 @@ class InferenceEngine:
                         all_boxes.append(boxes_xyxy)
                         all_scores.append(scores)
                         all_classes.append(classes)
+                        all_tile_ids.append(np.full(len(scores), tile_idx, dtype=np.int32))
                         n_det_total += len(scores)
                 return n_det_total
 
@@ -547,7 +602,7 @@ class InferenceEngine:
                     raise CancelledError("Dibatalkan oleh pengguna.")
 
                 tile_batch.append(_prepare_tile(x_off, y_off, w, h))
-                offset_batch.append((x_off, y_off))
+                offset_batch.append((x_off, y_off, idx))
 
                 is_last = (idx == total)
                 if len(tile_batch) >= batch_size or is_last:
@@ -566,9 +621,11 @@ class InferenceEngine:
         all_boxes = np.concatenate(all_boxes, axis=0)
         all_scores = np.concatenate(all_scores, axis=0)
         all_classes = np.concatenate(all_classes, axis=0)
+        all_tile_ids = np.concatenate(all_tile_ids, axis=0)
 
         self.log_fn(f"Total deteksi sebelum NMS: {len(all_boxes)}")
 
+        max_radius_px = None
         if centroid_dist_factor is not None:
             _box_w = all_boxes[:, 2] - all_boxes[:, 0]
             _box_h = all_boxes[:, 3] - all_boxes[:, 1]
@@ -576,15 +633,35 @@ class InferenceEngine:
             _radius = centroid_dist_factor * _diag
             self.log_fn(
                 f"[NMS] Radius gabung duplikat: mode adaptif per-pasangan "
-                f"(faktor={centroid_dist_factor}). Estimasi rentang radius dari "
-                f"{len(all_boxes)} box -- min={_radius.min():.1f}px, "
-                f"median={float(np.median(_radius)):.1f}px, max={_radius.max():.1f}px "
-                f"(menyesuaikan otomatis untuk kanopi kecil maupun besar dalam "
-                f"raster yang sama, bukan satu radius global)."
+                f"(faktor={centroid_dist_factor}), HANYA berlaku untuk pasangan "
+                f"box lintas-tile. Estimasi rentang radius dari {len(all_boxes)} "
+                f"box -- min={_radius.min():.1f}px, "
+                f"median={float(np.median(_radius)):.1f}px, max={_radius.max():.1f}px."
             )
 
+            if len(_diag) >= 20:
+                # Batas otomatis: persentil-90 diagonal SELURUH box di raster ini
+                # dipakai sebagai acuan "kanopi wajar terbesar". Radius pasangan
+                # yang lebih besar dari itu (mis. dua box raksasa/outlier) dipangkas
+                # ke batas ini, supaya tidak salah menggabung dua pohon dewasa
+                # berbeda yang cuma kebetulan berdekatan sesuai jarak tanam normal.
+                # Dihitung otomatis dari statistik deteksi itu sendiri -- tidak
+                # butuh input tambahan dari pengguna.
+                ref_diag = float(np.percentile(_diag, 90))
+                max_radius_px = centroid_dist_factor * ref_diag
+                self.log_fn(
+                    f"[NMS] Batas radius otomatis: persentil-90 diagonal "
+                    f"={ref_diag:.1f}px -> radius pasangan dipangkas maks "
+                    f"{max_radius_px:.1f}px."
+                )
+            else:
+                self.log_fn("[NMS] Deteksi terlalu sedikit untuk batas radius "
+                             "otomatis, dilewati (radius adaptif tidak dibatasi).")
+
         keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold,
-                               centroid_dist_factor=centroid_dist_factor)
+                               centroid_dist_factor=centroid_dist_factor,
+                               max_radius_px=max_radius_px,
+                               tile_ids=all_tile_ids)
         final_boxes = all_boxes[keep_idx]
         final_scores = all_scores[keep_idx]
         final_classes = all_classes[keep_idx]

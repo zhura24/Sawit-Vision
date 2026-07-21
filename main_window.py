@@ -528,6 +528,64 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     color: %(text)s;
 }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid %(accent)s; }
+
+QSpinBox, QDoubleSpinBox { padding-right: 22px; }
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 20px;
+    height: 13px;
+    border-left: 1px solid %(border)s;
+    border-bottom: 1px solid %(border)s;
+    border-top-right-radius: 6px;
+    background-color: %(bg_elevated)s;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 20px;
+    height: 13px;
+    border-left: 1px solid %(border)s;
+    border-bottom-right-radius: 6px;
+    background-color: %(bg_elevated)s;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: %(bg_hover)s;
+}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+    background-color: %(accent)s;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    image: none;
+    width: 0px;
+    height: 0px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid %(text)s;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    image: none;
+    width: 0px;
+    height: 0px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid %(text)s;
+}
+QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled {
+    border-bottom-color: %(text_faint)s;
+}
+QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {
+    border-top-color: %(text_faint)s;
+}
+QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {
+    border-bottom-color: %(accent_text)s;
+}
+QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
+    border-top-color: %(accent_text)s;
+}
+
 QComboBox::drop-down { border: none; width: 24px; }
 QComboBox QAbstractItemView {
     background-color: %(bg_elevated)s;
@@ -1885,29 +1943,6 @@ class MainWindow(QMainWindow):
 
         from PyQt6.QtWidgets import QCheckBox
 
-        self.chk_centroid_nms = QCheckBox("Gabung duplikat tepi tile (centroid-distance)")
-        self.chk_centroid_nms.setChecked(True)
-        self.chk_centroid_nms.setToolTip(
-            "Selain IoU, NMS antar-tile juga akan menganggap dua deteksi sebagai\n"
-            "objek yang sama kalau jarak titik tengahnya (centroid) berdekatan --\n"
-            "menutup kasus duplikat di tepi tile yang lolos dari IoU biasa karena\n"
-            "kanopi sedikit terpotong di salah satu tile.\n"
-            "Radius jarak dihitung otomatis dari ukuran box hasil deteksi (bukan\n"
-            "angka piksel tetap), jadi menyesuaikan resolusi raster."
-        )
-        lay_param.addWidget(self.chk_centroid_nms)
-
-        self.centroid_factor_spin = QDoubleSpinBox()
-        self.centroid_factor_spin.setRange(0.1, 1.0)
-        self.centroid_factor_spin.setSingleStep(0.05)
-        self.centroid_factor_spin.setValue(0.5)
-        self.centroid_factor_spin.setToolTip(
-            "Faktor pengali terhadap median diagonal box (0.5 = radius kanopi).\n"
-            "Naikkan kalau masih ada duplikat di tepi tile; turunkan kalau pohon\n"
-            "berdempetan yang legit malah ikut ter-gabung jadi satu."
-        )
-        param_form.addRow("Faktor radius gabung:", self.centroid_factor_spin)
-        self.chk_centroid_nms.toggled.connect(self.centroid_factor_spin.setEnabled)
         self.chk_export_centroid = QCheckBox("Ekspor titik tengah (centroid) otomatis")
         self.chk_export_centroid.setToolTip(
             "Jika dicentang, setelah deteksi selesai akan otomatis menyimpan\n"
@@ -2055,16 +2090,11 @@ class MainWindow(QMainWindow):
         conf = self.settings.value("conf", 0.25, type=float)
         batch = self.settings.value("batch_size", 8, type=int)
         output_dir = self.settings.value("output_dir", "", type=str)
-        centroid_nms_enabled = self.settings.value("centroid_nms_enabled", True, type=bool)
-        centroid_factor = self.settings.value("centroid_dist_factor", 0.5, type=float)
         self.tile_spin.setValue(tile)
         self.overlap_spin.setValue(overlap)
         self.conf_slider.setValue(int(round(conf * 100)))
         self.batch_spin.setValue(batch)
         self.output_dir_edit.setText(output_dir)
-        self.chk_centroid_nms.setChecked(centroid_nms_enabled)
-        self.centroid_factor_spin.setValue(centroid_factor)
-        self.centroid_factor_spin.setEnabled(centroid_nms_enabled)
 
     def _persist_current_settings(self):
         self.settings.setValue("tile_size", self.tile_spin.value())
@@ -2072,8 +2102,6 @@ class MainWindow(QMainWindow):
         self.settings.setValue("conf", self.conf_slider.value() / 100.0)
         self.settings.setValue("batch_size", self.batch_spin.value())
         self.settings.setValue("output_dir", self.output_dir_edit.text().strip())
-        self.settings.setValue("centroid_nms_enabled", self.chk_centroid_nms.isChecked())
-        self.settings.setValue("centroid_dist_factor", self.centroid_factor_spin.value())
 
     # ------------------------------------------------------
     # OUTPUT (nama & folder tujuan, ditentukan sebelum run)
@@ -2247,9 +2275,12 @@ class MainWindow(QMainWindow):
         output_dir = self.output_dir_edit.text().strip() or None
         out_name = self.output_name_edit.text().strip() or None
         force_cpu = self.settings.value("force_cpu", False, type=bool)
-        centroid_dist_factor = (
-            self.centroid_factor_spin.value() if self.chk_centroid_nms.isChecked() else None
-        )
+        # Gabung duplikat tepi tile (centroid-distance) selalu aktif dengan
+        # faktor default yang direkomendasikan -- radius per-pasangan tetap
+        # adaptif ke ukuran box, dan batas atasnya (supaya kanopi besar tidak
+        # salah tergabung) dihitung otomatis di dalam InferenceEngine.run().
+        # Tidak ada lagi yang perlu diisi manual oleh pengguna.
+        centroid_dist_factor = 0.5
 
         import time as _time
         self._run_start_time = _time.time()

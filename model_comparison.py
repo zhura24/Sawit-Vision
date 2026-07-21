@@ -25,28 +25,71 @@ from openpyxl.utils import get_column_letter
 SUPPORTED_EXTS = (".shp", ".gpkg", ".geojson", ".json")
 
 
+def _geom_centroid_and_bbox(geom):
+    """Hitung centroid + axis-aligned bounding box dari geometri shapefile.
+    Return: dict {"centroid": (x,y), "bbox": (xmin,ymin,xmax,ymax)}, atau
+            None kalau geometri kosong.
+
+    Untuk POINT: bbox = None (jelas gak punya box).
+    Untuk POLYGON: bbox = envelope dari semua vertex, centroid = rata-rata
+                   vertex unik.
+    """
+    pts = geom.points
+    if not pts:
+        return None
+    # Untuk polygon pyshp, vertex pertama = vertex terakhir (ring tertutup).
+    if len(pts) >= 2 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) == 1:
+        # Single point -- gak ada bbox konsep-nya
+        return {"centroid": (float(pts[0][0]), float(pts[0][1])), "bbox": None}
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+    bbox = (min(xs), min(ys), max(xs), max(ys))
+    return {"centroid": (float(cx), float(cy)), "bbox": tuple(float(v) for v in bbox)}
+
+
+def _geom_centroid(geom):
+    """Wrapper kompatibilitas: cuma balikin centroid, tanpa bbox.
+    Dipertahankan supaya code lain yang panggil ini gak ke-break."""
+    result = _geom_centroid_and_bbox(geom)
+    return result["centroid"] if result else None
+
+
 def read_points_shp(path):
     """
-    Baca semua titik (Point) dari shapefile.
-    Return: (xy, attrs)
-      xy    -> np.ndarray shape (N, 2)
-      attrs -> list of dict atribut per titik (boleh kosong/tidak dipakai)
+    Baca semua "titik" dari shapefile. Untuk shapefile POLYGON (mis. hasil
+    inference Sawit Vision yang menyimpan bounding box), centroid tiap polygon
+    otomatis dihitung -- BUKAN ambil pojok pertama. Ini krusial supaya
+    comparison tidak bias ~1 m ke arah pojok kiri-atas box.
+
+    Return: (xy, attrs, bboxes)
+      xy      -> np.ndarray shape (N, 2), centroid tiap objek
+      attrs   -> list of dict atribut per titik (boleh kosong/tidak dipakai)
+      bboxes  -> list of (xmin,ymin,xmax,ymax) atau None per objek.
+                 None kalau geometri POINT (gak punya box).
+                 List ini dipakai untuk containment-based matching:
+                 matching berdasarkan "GT point masuk ke dalam bounding box
+                 deteksi", bukan cuma jarak antar centroid.
     """
     sf = shapefile.Reader(path)
     field_names = [f[0] for f in sf.fields[1:]]  # field[0] = DeletionFlag, skip
     pts = []
     attrs = []
+    bboxes = []
     for sr in sf.iterShapeRecords():
-        geom = sr.shape
-        if not geom.points:
+        result = _geom_centroid_and_bbox(sr.shape)
+        if result is None:
             continue
-        x, y = geom.points[0]
-        pts.append((x, y))
+        pts.append(result["centroid"])
+        bboxes.append(result["bbox"])
         rec = list(sr.record)
         attrs.append(dict(zip(field_names, rec)))
     if not pts:
-        return np.empty((0, 2), dtype=float), []
-    return np.array(pts, dtype=float), attrs
+        return np.empty((0, 2), dtype=float), [], []
+    return np.array(pts, dtype=float), attrs, bboxes
 
 
 def _wkb_point_xy(wkb: bytes):
@@ -62,6 +105,10 @@ def read_points_gpkg(path):
     Ambil layer geometri pertama yang terdaftar di gpkg_geometry_columns.
     Sekalian ambil kolom atribut lain di tabel yang sama (di luar kolom geometri)
     supaya bisa di-join dengan data model lain saat export perbandingan.
+
+    Return: (xy, attrs, bboxes)
+      bboxes -> selalu list of None untuk .gpkg (kita cuma baca POINT/POINTZ,
+                gak baca polygon di sini karena GT manual = titik).
     """
     conn = sqlite3.connect(path)
     try:
@@ -91,18 +138,24 @@ def read_points_gpkg(path):
     finally:
         conn.close()
     if not pts:
-        return np.empty((0, 2), dtype=float), []
-    return np.array(pts, dtype=float), attrs
+        return np.empty((0, 2), dtype=float), [], []
+    # bboxes semua None: GeoPackage di sini hanya support POINT (buat GT manual).
+    return np.array(pts, dtype=float), attrs, [None] * len(pts)
 
 
 def read_points_geojson(path):
     """Baca titik dari .geojson / .json (FeatureCollection Point/MultiPoint/Polygon->centroid).
     Kolom "properties" tiap feature ikut diambil sebagai atribut supaya bisa
-    di-join dengan data model lain saat export perbandingan."""
+    di-join dengan data model lain saat export perbandingan.
+
+    Return: (xy, attrs, bboxes)
+      bboxes -> untuk feature POLYGON, isi (xmin,ymin,xmax,ymax). Untuk POINT/
+                MultiPoint, isi None."""
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     pts = []
     attrs = []
+    bboxes = []
     for feat in data.get("features", []):
         geom = feat.get("geometry") or {}
         gtype = geom.get("type")
@@ -113,23 +166,41 @@ def read_points_geojson(path):
         if gtype == "Point":
             pts.append((coords[0], coords[1]))
             attrs.append(dict(props))
+            bboxes.append(None)
         elif gtype == "MultiPoint":
             for c in coords:
                 pts.append((c[0], c[1]))
                 attrs.append(dict(props))
+                bboxes.append(None)
         elif gtype == "Polygon":
             ring = coords[0]
             xs = [c[0] for c in ring]
             ys = [c[1] for c in ring]
             pts.append((sum(xs) / len(xs), sum(ys) / len(ys)))
             attrs.append(dict(props))
+            bboxes.append((min(xs), min(ys), max(xs), max(ys)))
     if not pts:
-        return np.empty((0, 2), dtype=float), []
-    return np.array(pts, dtype=float), attrs
+        return np.empty((0, 2), dtype=float), [], []
+    return np.array(pts, dtype=float), attrs, bboxes
 
 
 def read_points_any(path):
-    """Dispatcher: baca titik dari .shp / .gpkg / .geojson / .json berdasarkan ekstensi file."""
+    """Dispatcher backward-compatible: baca titik dari .shp / .gpkg / .geojson.
+
+    Return: (xy, attrs)  <-- SENGAJA hanya 2 elemen supaya code lama
+                             yang unpack `xy, attrs = read_points_any(path)`
+                             tetap jalan.
+
+    Kalau lo butuh bounding box juga (untuk containment matching), pakai
+    read_points_any_full() yang return 3 elemen (xy, attrs, bboxes).
+    """
+    xy, attrs, _bboxes = read_points_any_full(path)
+    return xy, attrs
+
+
+def read_points_any_full(path):
+    """Dispatcher lengkap: return (xy, attrs, bboxes) untuk semua format.
+    Pakai ini kalau lo butuh bounding box (untuk containment matching)."""
     ext = os.path.splitext(path)[1].lower()
     if ext == ".shp":
         return read_points_shp(path)
@@ -176,9 +247,135 @@ def match_greedy(manual_xy: np.ndarray, infer_xy: np.ndarray, threshold: float):
     return matches, fp, fn
 
 
-def evaluate_model(manual_xy, infer_xy, threshold):
-    """Hitung metrik lengkap untuk satu model. Return (metrics_dict, matches, fp, fn)."""
-    matches, fp, fn = match_greedy(manual_xy, infer_xy, threshold)
+def _extract_confidence(attr):
+    """Cari nilai confidence dari dict atribut. Sawit Vision pakai field
+    'confidence', tapi kita coba beberapa nama umum juga sebagai fallback
+    (score/conf/probability) supaya robust ke depan.
+
+    Return float 0..1 (atau angka apa saja), atau None kalau tidak ketemu.
+    """
+    if not attr:
+        return None
+    for key in ("confidence", "conf", "score", "prob", "probability"):
+        if key in attr:
+            try:
+                v = attr[key]
+                if v is None or v == "":
+                    continue
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs):
+    """Containment-based matching dengan confidence tiebreaker.
+
+    Untuk setiap titik GT (manual), cari SEMUA bounding box deteksi yang
+    MENGANDUNG titik itu (point-in-box check). Kalau ada ambiguitas
+    (>1 box), pilih yang:
+      1. Confidence tertinggi (primary tiebreaker)
+      2. Jarak centroid box ke GT terkecil (secondary tiebreaker)
+    Aturan 1-to-1: setiap box hanya boleh dipakai untuk 1 GT.
+
+    Kenapa aturan 1-to-1: mencegah model "curang" -- 1 box gede yang
+    mencakup 5 pohon tidak boleh menghasilkan 5 TP. Kalau box sudah
+    dipakai untuk GT_A, GT_B/C/D yang juga masuk box itu jadi FN.
+
+    Return:
+      matches -> list of (infer_idx, manual_idx, distance)
+                 distance di sini = jarak centroid box ke GT (untuk info,
+                 bukan syarat matching).
+      fp_idx  -> list infer_idx yang TIDAK dapat pasangan (deteksi yang
+                 tidak mengandung GT manapun, atau kalah tiebreaker).
+      fn_idx  -> list manual_idx yang TIDAK dapat pasangan (GT yang tidak
+                 masuk ke box manapun).
+    """
+    n_manual, n_infer = len(manual_xy), len(infer_xy)
+    if n_infer == 0:
+        return [], [], list(range(n_manual))
+    if n_manual == 0:
+        return [], list(range(n_infer)), []
+
+    # Ekstrak confidence tiap deteksi untuk tiebreaker. Kalau None,
+    # anggap 0.0 (bakal kalah tiebreaker vs yang punya confidence).
+    confidences = [
+        _extract_confidence(attr) if attr else None
+        for attr in infer_attrs
+    ]
+
+    # Untuk tiap GT, cari semua box yang mengandungnya + hitung jarak
+    # centroid box ke GT (untuk secondary tiebreaker).
+    #
+    # Kita bangun list of (gt_idx, list_of_candidates) di mana
+    # candidates = [(infer_idx, conf, dist_to_gt), ...]
+    # yang dipilih adalah candidate dengan (conf tertinggi, dist terkecil).
+
+    used_infer = set()  # box yang sudah dipakai (aturan 1-to-1)
+    matches = []
+    fn = []
+
+    # Iterasi tiap GT
+    for m_idx, (gx, gy) in enumerate(manual_xy):
+        candidates = []
+        for i_idx, bbox in enumerate(infer_bboxes):
+            if i_idx in used_infer:
+                continue  # sudah dipakai GT lain
+            if bbox is None:
+                continue  # box POINT, gak bisa untuk containment
+            xmin, ymin, xmax, ymax = bbox
+            if xmin <= gx <= xmax and ymin <= gy <= ymax:
+                cx, cy = infer_xy[i_idx]
+                dist = float(np.hypot(cx - gx, cy - gy))
+                conf = confidences[i_idx] if confidences[i_idx] is not None else 0.0
+                candidates.append((i_idx, conf, dist))
+
+        if not candidates:
+            fn.append(m_idx)
+            continue
+
+        # Pilih candidate terbaik: conf DESC, dist ASC.
+        # sorted key: (-conf, dist) supaya sorted() menaruh yang terbaik di index 0.
+        candidates.sort(key=lambda c: (-c[1], c[2]))
+        best_i, _best_conf, best_dist = candidates[0]
+        used_infer.add(best_i)
+        matches.append((best_i, m_idx, best_dist))
+
+    # Deteksi yang tidak dipakai = FP
+    fp = [i for i in range(n_infer) if i not in used_infer]
+    return matches, fp, fn
+
+
+def evaluate_model(manual_xy, infer_xy, threshold, infer_bboxes=None, infer_attrs=None):
+    """Hitung metrik lengkap untuk satu model.
+
+    MODE MATCHING:
+    - Kalau infer_bboxes tersedia (list dengan minimal 1 bbox tidak-None) →
+      pakai CONTAINMENT matching. Threshold TIDAK dipakai (containment ini
+      bounded oleh ukuran box itu sendiri). Tiebreaker: confidence, lalu
+      jarak centroid.
+    - Kalau infer_bboxes semua None atau tidak diberikan → fallback ke
+      GREEDY DISTANCE matching (perilaku lama). Threshold dipakai sebagai
+      radius maksimum matching.
+
+    Auto-detect ini bikin API backward-compatible: kalau caller lama
+    manggil `evaluate_model(manual_xy, infer_xy, threshold)` tanpa bbox,
+    tetap jalan seperti biasa. Kalau caller baru pass bbox, otomatis
+    dapat containment matching yang lebih tepat.
+    """
+    # Auto-detect mode
+    has_bbox = (infer_bboxes is not None and
+                any(b is not None for b in infer_bboxes))
+
+    if has_bbox:
+        matches, fp, fn = match_containment(
+            manual_xy, infer_xy, infer_bboxes, infer_attrs or [{}] * len(infer_xy)
+        )
+        match_mode = "containment"
+    else:
+        matches, fp, fn = match_greedy(manual_xy, infer_xy, threshold)
+        match_mode = "distance"
+
     tp = len(matches)
     n_fp = len(fp)
     n_fn = len(fn)
@@ -195,8 +392,106 @@ def evaluate_model(manual_xy, infer_xy, threshold):
         "median_dist": float(np.median(dists)) if dists.size else 0.0,
         "rmse_dist": float(np.sqrt((dists ** 2).mean())) if dists.size else 0.0,
         "max_dist": float(dists.max()) if dists.size else 0.0,
+        "match_mode": match_mode,  # 'containment' atau 'distance' -- info buat log
     }
     return metrics, matches, fp, fn
+
+
+# ============================================================
+# AUTO-COMPUTE THRESHOLD dari struktur spasial GT
+# ============================================================
+# Prinsip: threshold yang tepat untuk matching centroid TIDAK boleh
+# ditebak dari asumsi literatur -- harus turun dari data GT itu sendiri.
+# Rumus: threshold = (median_nearest_neighbor_distance / 2) * safety_factor.
+# Kenapa median/2: setengah jarak antar pohon = batas maksimum agar 1
+# deteksi tidak "ambigu" antara 2 pohon GT tetangga.
+# Kenapa safety 0.7: kasih margin agar tidak persis di ambang batas.
+
+def compute_nn_stats(xy):
+    """Hitung statistik nearest-neighbor distance dari array titik.
+    Return dict dengan min/p10/p25/median/mean/std/p75/p90/max, atau None
+    kalau jumlah titik < 2 (tidak cukup untuk analisis spasial)."""
+    if xy is None or len(xy) < 2:
+        return None
+    tree = cKDTree(xy)
+    # k=2 karena k=1 selalu return dirinya sendiri (jarak 0).
+    dists, _ = tree.query(xy, k=2)
+    nn = dists[:, 1]  # tetangga terdekat KEDUA = bukan diri sendiri
+    return {
+        "n_points": len(xy),
+        "nn_min": float(nn.min()),
+        "nn_p10": float(np.percentile(nn, 10)),
+        "nn_p25": float(np.percentile(nn, 25)),
+        "nn_median": float(np.median(nn)),
+        "nn_mean": float(nn.mean()),
+        "nn_std": float(nn.std()),
+        "nn_p75": float(np.percentile(nn, 75)),
+        "nn_p90": float(np.percentile(nn, 90)),
+        "nn_max": float(nn.max()),
+    }
+
+
+def auto_compute_threshold(gt_path, safety_factor=0.7):
+    """Hitung threshold matching yang direkomendasikan dari file GT.
+    Fungsi ini yang dipanggil GUI saat user klik "Hitung Otomatis dari GT".
+
+    Rumus:
+        threshold = (median_nearest_neighbor / 2) * safety_factor
+
+    Return dict:
+      "threshold"     : float, threshold rekomendasi dalam satuan CRS GT
+      "conservative"  : float, threshold ketat (median/4)
+      "liberal"       : float, threshold longgar (median/2, tanpa safety)
+      "nn_stats"      : dict statistik nearest-neighbor
+      "explanation"   : string, penjelasan asal angka (buat di-log ke user)
+      "n_points"      : int, jumlah titik GT
+      "warning"       : string atau None, warning kalau ada anomali
+
+    Raises ValueError kalau file tidak bisa dibaca atau titik < 2.
+    """
+    xy, _attrs = read_points_any(gt_path)
+    n = len(xy)
+    if n < 2:
+        raise ValueError(
+            f"GT hanya berisi {n} titik. Butuh minimal 2 titik untuk hitung "
+            "jarak antar-tetangga. Threshold otomatis tidak bisa dihitung."
+        )
+
+    stats = compute_nn_stats(xy)
+    median_nn = stats["nn_median"]
+    p25_nn = stats["nn_p25"]
+
+    # Skenario aneh: median NN sangat kecil (< 0.5m) -- kemungkinan
+    # ada titik duplikat di GT. Fallback ke p25 (lebih robust) dan kasih warning.
+    warning = None
+    if median_nn < 0.5:
+        base_spacing = p25_nn if p25_nn >= 0.5 else 1.0
+        warning = (f"Median jarak antar-tetangga di GT sangat kecil "
+                   f"({median_nn:.2f} m). Kemungkinan ada titik duplikat. "
+                   f"Threshold dihitung dari fallback (p25 atau 1.0 m).")
+    else:
+        base_spacing = median_nn
+
+    threshold = round(base_spacing / 2.0 * safety_factor, 2)
+    conservative = round(base_spacing / 4.0, 2)
+    liberal = round(base_spacing / 2.0, 2)
+
+    explanation = (
+        f"Auto-threshold: berdasarkan {n} titik GT. "
+        f"Median jarak antar-tetangga = {median_nn:.2f} m. "
+        f"Threshold = ({base_spacing:.2f} / 2) x {safety_factor} = {threshold} m. "
+        f"Range: konservatif {conservative} m .. longgar {liberal} m."
+    )
+
+    return {
+        "threshold": threshold,
+        "conservative": conservative,
+        "liberal": liberal,
+        "nn_stats": stats,
+        "explanation": explanation,
+        "n_points": n,
+        "warning": warning,
+    }
 
 
 def _numeric_avg(values):
@@ -563,3 +858,368 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
         sh.freeze_panes = "A2"
 
     wb.save(output_path)
+
+
+# ============================================================
+# EXPORT TITIK HASIL (TP / FP / FN) -- Shapefile + GeoJSON + CSV
+# ============================================================
+# Selain ringkasan Excel, tiap titik hasil pencocokan (benar/salah/terlewat)
+# juga diekspor sebagai layer titik siap-pakai di GIS (QGIS dsb), supaya bisa
+# langsung dilihat/diberi simbol beda per status di atas peta -- tidak cuma
+# angka di tabel.
+
+def _safe_filename(name: str) -> str:
+    """Bikin nama file aman dari nama model bebas (hilangkan karakter yang
+    tidak valid untuk nama file di Windows/Linux)."""
+    keep = "".join(c if (c.isalnum() or c in ("_", "-")) else "_" for c in name.strip())
+    keep = keep.strip("_")
+    return keep or "model"
+
+
+def _dbf_safe_fields(keys, prefix: str):
+    """Nama kolom DBF (shapefile) maksimal 10 karakter. Fungsi ini membuat
+    nama field pendek & unik (dengan prefix i_/m_ supaya jelas asalnya infer
+    atau manual) dari nama kolom atribut asli yang bisa panjang/bebas."""
+    used = set()
+    mapping = {}
+    for k in keys:
+        base = (prefix + "".join(c for c in str(k) if c.isalnum()))[:10] or (prefix + "f")
+        candidate = base
+        n = 1
+        while candidate in used:
+            n += 1
+            suffix = str(n)
+            candidate = base[: 10 - len(suffix)] + suffix
+        used.add(candidate)
+        mapping[k] = candidate
+    return mapping
+
+
+def _build_status_rows(manual_xy, infer_xy, matches, fp, fn, infer_attrs, manual_attrs):
+    """Satukan TP + FP + FN jadi satu daftar baris titik dengan kolom "status",
+    supaya tiap model cukup 1 layer (bukan 3 file terpisah) dan tinggal
+    difilter/diberi simbol beda per status di GIS."""
+    rows = []
+    for i_idx, m_idx, d in matches:
+        rows.append({
+            "status": "TP", "manual_idx": m_idx, "infer_idx": i_idx,
+            "distance_m": round(float(d), 4),
+            "x": float(infer_xy[i_idx][0]), "y": float(infer_xy[i_idx][1]),
+            "_infer": infer_attrs[i_idx] if i_idx < len(infer_attrs) else {},
+            "_manual": manual_attrs[m_idx] if m_idx < len(manual_attrs) else {},
+        })
+    for i_idx in fp:
+        rows.append({
+            "status": "FP", "manual_idx": None, "infer_idx": i_idx, "distance_m": None,
+            "x": float(infer_xy[i_idx][0]), "y": float(infer_xy[i_idx][1]),
+            "_infer": infer_attrs[i_idx] if i_idx < len(infer_attrs) else {},
+            "_manual": {},
+        })
+    for m_idx in fn:
+        rows.append({
+            "status": "FN", "manual_idx": m_idx, "infer_idx": None, "distance_m": None,
+            "x": float(manual_xy[m_idx][0]), "y": float(manual_xy[m_idx][1]),
+            "_infer": {},
+            "_manual": manual_attrs[m_idx] if m_idx < len(manual_attrs) else {},
+        })
+    return rows
+
+
+def _read_crs_wkt(source_path):
+    """Ambil definisi CRS dari file vektor apapun sebagai WKT string.
+    - .shp    -> baca file .prj di sebelahnya (kalau ada)
+    - .gpkg   -> baca dari tabel gpkg_spatial_ref_sys (kolom 'definition')
+                 sesuai srs_id yang dipakai layer geometri pertama
+    - .geojson/.json -> baca root "crs" (GeoJSON lama) kalau ada; kalau tidak
+                 ada, GeoJSON RFC 7946 default = WGS84 (EPSG:4326) --
+                 return WKT WGS84 sebagai default aman.
+
+    Return string WKT, atau None kalau benar-benar tidak bisa ditentukan.
+
+    Ini pengganti _copy_prj_if_available lama yang HANYA jalan untuk sumber
+    .shp -- akibatnya kalau ground truth manual disimpan sebagai .gpkg,
+    shapefile output tidak pernah dapat .prj dan titik-titiknya "lompat"
+    keluar extent raster saat dibuka di QGIS.
+    """
+    if not source_path:
+        return None
+    ext = os.path.splitext(source_path)[1].lower()
+
+    if ext == ".shp":
+        prj = os.path.splitext(source_path)[0] + ".prj"
+        if os.path.isfile(prj):
+            try:
+                with open(prj, "r", encoding="utf-8", errors="ignore") as f:
+                    return f.read().strip() or None
+            except OSError:
+                return None
+        return None
+
+    if ext == ".gpkg":
+        try:
+            conn = sqlite3.connect(source_path)
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT table_name, srs_id FROM gpkg_geometry_columns")
+                row = cur.fetchone()
+                if not row:
+                    return None
+                _, srs_id = row
+                cur.execute(
+                    "SELECT definition FROM gpkg_spatial_ref_sys WHERE srs_id = ?",
+                    (srs_id,),
+                )
+                d = cur.fetchone()
+                if d and d[0] and d[0].lower() != "undefined":
+                    return d[0].strip()
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError):
+            return None
+        return None
+
+    if ext in (".geojson", ".json"):
+        try:
+            with open(source_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+        crs = data.get("crs")
+        if isinstance(crs, dict):
+            props = crs.get("properties") or {}
+            name = props.get("name") or ""
+            # Contoh "urn:ogc:def:crs:EPSG::32749" -> ambil "32749"
+            if "EPSG" in name.upper():
+                digits = "".join(ch for ch in name if ch.isdigit())
+                if digits:
+                    return _WKT_BY_EPSG.get(digits, _WKT_WGS84)
+        # RFC 7946: GeoJSON tanpa "crs" = WGS84
+        return _WKT_WGS84
+
+    return None
+
+
+# WKT WGS84 (EPSG:4326) sebagai fallback aman untuk GeoJSON RFC 7946.
+_WKT_WGS84 = (
+    'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,'
+    'AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],'
+    'PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],'
+    'UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],'
+    'AUTHORITY["EPSG","4326"]]'
+)
+# Extend kalau nanti butuh EPSG lain di GeoJSON lama -- untuk sekarang cukup 4326.
+_WKT_BY_EPSG = {"4326": _WKT_WGS84}
+
+
+def _write_prj(dest_shp_path, wkt):
+    """Tulis file .prj di sebelah shapefile output. Aman dipanggil dengan
+    wkt=None (dilewati diam-diam)."""
+    if not wkt:
+        return False
+    try:
+        prj_path = os.path.splitext(dest_shp_path)[0] + ".prj"
+        with open(prj_path, "w", encoding="utf-8") as f:
+            f.write(wkt)
+        return True
+    except OSError:
+        return False
+
+
+def _extract_epsg_from_wkt(wkt):
+    """Ekstrak kode EPSG dari WKT string. WKT biasanya diakhiri:
+    ...AUTHORITY["EPSG","32750"]]. Kita ambil angka di dalam AUTHORITY
+    "EPSG",... yang paling akhir (paling luar) -- itu EPSG asli si CRS,
+    bukan sub-komponen seperti datum atau ellipsoid.
+
+    Return string EPSG (mis. "32750") atau None kalau tidak ketemu.
+
+    Ini dipakai untuk isi property "crs" di GeoJSON output supaya QGIS
+    tidak salah anggap sebagai default WGS84 (EPSG:4326) padahal koordinatnya
+    UTM.
+    """
+    if not wkt:
+        return None
+    import re
+    # Cari SEMUA occurrence AUTHORITY["EPSG","<digits>"] lalu ambil yang terakhir
+    # -- yang terakhir di WKT well-formed selalu EPSG dari CRS terluar.
+    matches = re.findall(r'AUTHORITY\s*\[\s*"EPSG"\s*,\s*"(\d+)"\s*\]', wkt)
+    return matches[-1] if matches else None
+
+
+def _write_points_shapefile(path, rows, infer_keys, manual_keys):
+    infer_map = _dbf_safe_fields(infer_keys, "i_")
+    manual_map = _dbf_safe_fields(manual_keys, "m_")
+
+    with shapefile.Writer(path, shapeType=shapefile.POINT) as shp:
+        shp.field("status", "C", size=8)
+        shp.field("manual_idx", "N", size=10)
+        shp.field("infer_idx", "N", size=10)
+        shp.field("dist_m", "N", size=12, decimal=4)
+        for k in infer_keys:
+            shp.field(infer_map[k], "C", size=50)
+        for k in manual_keys:
+            shp.field(manual_map[k], "C", size=50)
+
+        for row in rows:
+            shp.point(row["x"], row["y"])
+            record = [row["status"], row["manual_idx"], row["infer_idx"], row["distance_m"]]
+            for k in infer_keys:
+                v = row["_infer"].get(k)
+                record.append("" if v is None else str(v))
+            for k in manual_keys:
+                v = row["_manual"].get(k)
+                record.append("" if v is None else str(v))
+            shp.record(*record)
+
+
+def _write_points_geojson(path, rows, infer_keys, manual_keys, epsg=None):
+    """Tulis titik ke .geojson. Kalau `epsg` diberikan, sisipkan property
+    "crs" di root FeatureCollection supaya QGIS dan software GIS lain
+    langsung tahu koordinatnya di CRS apa.
+
+    Kenapa ini penting: RFC 7946 (GeoJSON modern) bilang kalau tidak ada
+    property "crs", default = WGS84 (EPSG:4326). Padahal kita nulis
+    koordinat UTM. Kalau tidak explicit tulis "crs", QGIS akan render
+    titik UTM sebagai lat/lon --> keluar extent raster jauh.
+
+    Format "crs" yang dipakai: OGC URN format (yang paling kompatibel
+    dengan QGIS, GDAL, ArcGIS, dsb):
+        {"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::<code>"}}
+    """
+    features = []
+    for row in rows:
+        props = {
+            "status": row["status"], "manual_idx": row["manual_idx"],
+            "infer_idx": row["infer_idx"], "distance_m": row["distance_m"],
+        }
+        for k in infer_keys:
+            props[f"infer.{k}"] = row["_infer"].get(k)
+        for k in manual_keys:
+            props[f"manual.{k}"] = row["_manual"].get(k)
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [row["x"], row["y"]]},
+            "properties": props,
+        })
+    fc = {"type": "FeatureCollection", "features": features}
+    if epsg:
+        fc["crs"] = {
+            "type": "name",
+            "properties": {"name": f"urn:ogc:def:crs:EPSG::{epsg}"},
+        }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(fc, f, indent=2, default=str)
+
+
+def _write_points_csv(path, rows, infer_keys, manual_keys):
+    import csv as _csv
+    fieldnames = (["status", "manual_idx", "infer_idx", "distance_m", "x", "y"]
+                  + [f"infer.{k}" for k in infer_keys] + [f"manual.{k}" for k in manual_keys])
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            out = {"status": row["status"], "manual_idx": row["manual_idx"],
+                   "infer_idx": row["infer_idx"], "distance_m": row["distance_m"],
+                   "x": row["x"], "y": row["y"]}
+            for k in infer_keys:
+                out[f"infer.{k}"] = row["_infer"].get(k, "")
+            for k in manual_keys:
+                out[f"manual.{k}"] = row["_manual"].get(k, "")
+            writer.writerow(out)
+
+
+def export_comparison_points(output_dir, manual_xy, model_results, manual_path=None, manual_attrs=None):
+    """
+    Ekspor titik hasil pencocokan tiap model sebagai Shapefile + GeoJSON + CSV
+    ke dalam output_dir, dalam 2 bentuk:
+      1. File TERPISAH per status: "<model>_TP.*", "<model>_FP.*", "<model>_FN.*"
+         -- masing-masing cuma berisi titik dengan status itu saja. Ini yang
+         paling gampang dipakai kalau mau kasih simbol/warna beda per layer
+         langsung di QGIS tanpa perlu filter dulu. Status yang jumlah titiknya
+         nol dilewati (tidak bikin file kosong).
+      2. Satu file GABUNGAN "<model>_hasil.*" berisi SEMUA titik (TP+FP+FN)
+         dengan kolom "status" -- buat yang lebih suka 1 layer + filter/style
+         berdasarkan atribut.
+
+    model_results: sama seperti pada export_comparison_excel (list of dict
+        dengan "name", "xy", "matches", "fp", "fn", "attrs").
+    manual_path: path file centroid manual asli (dipakai buat coba salin
+        .prj-nya kalau sumbernya .shp, supaya CRS ikut terbawa).
+
+    Return: list of dict per model:
+        {"name": str,
+         "combined": {"shp":.., "geojson":.., "csv":..},
+         "by_status": {"TP": {...} atau None, "FP": {...} atau None, "FN": {...} atau None}}
+    """
+    manual_attrs = manual_attrs or []
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Tentukan CRS output SEKALI di awal, prioritas:
+    #   1. CRS dari file manual (ground truth) -- ini yang paling benar karena
+    #      koordinat FN memang datang dari sini.
+    #   2. Fallback: CRS dari file inference pertama yang punya .prj (biasanya
+    #      hasil Sawit Vision selalu punya, karena save_shapefile di
+    #      inference_core.py menulisnya dari raster).
+    # Kalau dua-duanya tidak ada, .prj tidak ditulis (perilaku lama), dan
+    # QGIS akan minta CRS manual saat file dibuka.
+    output_wkt = _read_crs_wkt(manual_path)
+    if not output_wkt:
+        for r in model_results:
+            candidate_wkt = _read_crs_wkt(r.get("path"))
+            if candidate_wkt:
+                output_wkt = candidate_wkt
+                break
+
+    # Ekstrak EPSG code dari WKT -- dipakai untuk isi property "crs" di
+    # GeoJSON output supaya QGIS/GDAL langsung mengenali CRS-nya, bukan
+    # fallback ke WGS84 (yang bikin titik UTM lompat keluar bumi).
+    output_epsg = _extract_epsg_from_wkt(output_wkt)
+
+    outputs = []
+    used_names = set()
+    for r in model_results:
+        rows = _build_status_rows(
+            manual_xy, r["xy"], r["matches"], r["fp"], r["fn"],
+            r.get("attrs", []), manual_attrs,
+        )
+
+        infer_keys = []
+        manual_keys = []
+        for row in rows:
+            for k in row["_infer"]:
+                if k not in infer_keys:
+                    infer_keys.append(k)
+            for k in row["_manual"]:
+                if k not in manual_keys:
+                    manual_keys.append(k)
+
+        base_name = _safe_filename(r["name"])
+        candidate = base_name
+        n = 1
+        while candidate in used_names:
+            n += 1
+            candidate = f"{base_name}_{n}"
+        used_names.add(candidate)
+
+        def _write_set(suffix, subset_rows):
+            shp_path = os.path.join(output_dir, f"{candidate}_{suffix}.shp")
+            geojson_path = os.path.join(output_dir, f"{candidate}_{suffix}.geojson")
+            csv_path = os.path.join(output_dir, f"{candidate}_{suffix}.csv")
+            _write_points_shapefile(shp_path, subset_rows, infer_keys, manual_keys)
+            _write_points_geojson(geojson_path, subset_rows, infer_keys, manual_keys,
+                                   epsg=output_epsg)
+            _write_points_csv(csv_path, subset_rows, infer_keys, manual_keys)
+            _write_prj(shp_path, output_wkt)
+            return {"shp": shp_path, "geojson": geojson_path, "csv": csv_path}
+
+        by_status = {}
+        for status in ("TP", "FP", "FN"):
+            subset = [row for row in rows if row["status"] == status]
+            by_status[status] = _write_set(status, subset) if subset else None
+
+        combined = _write_set("hasil", rows)
+
+        outputs.append({"name": r["name"], "combined": combined, "by_status": by_status})
+
+    return outputs
