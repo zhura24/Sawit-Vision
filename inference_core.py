@@ -88,7 +88,8 @@ def pad_tile_for_inference(tile_hwc: np.ndarray, target_size: int = 640) -> np.n
 
 
 def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5,
-               centroid_dist_threshold: float = None):
+               centroid_dist_threshold: float = None,
+               centroid_dist_factor: float = None):
     """
     NMS untuk menghapus deteksi duplikat di area overlap antar tile.
 
@@ -98,9 +99,25 @@ def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5
     sehingga IoU-nya kadang jatuh DI BAWAH iou_threshold biasa meski itu pohon yang sama.
 
     Untuk menutup celah itu, ditambahkan fallback: box dianggap duplikat juga kalau
-    jarak centroid-nya cukup dekat (<= centroid_dist_threshold piksel), meskipun IoU
-    rendah. Kalau centroid_dist_threshold=None, perilaku identik dengan NMS lama
-    (murni IoU).
+    jarak centroid-nya cukup dekat, meskipun IoU rendah. Ada dua mode fallback:
+
+    1. ADAPTIF (centroid_dist_factor, DIREKOMENDASIKAN): radius merge dihitung
+       PER-PASANGAN kandidat, dari rata-rata diagonal box pasangan itu sendiri
+       (radius = centroid_dist_factor * rata-rata diagonal kedua box). Ini penting
+       kalau dalam satu raster ada campuran kanopi kecil & besar -- radius jadi
+       otomatis kecil untuk pasangan pohon kecil dan besar untuk pasangan pohon
+       besar, tidak memakai satu angka radius global yang sama untuk semua ukuran.
+
+    2. GLOBAL (centroid_dist_threshold, LEGACY): satu radius piksel tetap untuk
+       semua pasangan, dihitung sebelumnya dari median diagonal SELURUH box di
+       gambar (lihat estimate_centroid_dist_threshold). Dipertahankan untuk
+       backward-compat; kalau raster punya variasi ukuran kanopi besar, mode ini
+       berisiko radius kekecilan untuk kanopi besar (duplikat lolos) atau
+       kegedean untuk kanopi kecil (dua pohon beda malah ke-merge).
+
+    Kalau centroid_dist_factor dan centroid_dist_threshold dua-duanya None,
+    perilaku identik dengan NMS lama (murni IoU). Kalau dua-duanya diisi,
+    centroid_dist_factor (adaptif) yang dipakai.
     """
     if len(boxes) == 0:
         return []
@@ -109,6 +126,12 @@ def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5
 
     cx = (x1 + x2) / 2.0
     cy = (y1 + y2) / 2.0
+
+    diag = None
+    if centroid_dist_factor is not None:
+        box_w = x2 - x1
+        box_h = y2 - y1
+        diag = np.sqrt(box_w ** 2 + box_h ** 2)
 
     order = scores.argsort()[::-1]
     keep = []
@@ -129,7 +152,14 @@ def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5
 
         is_duplicate = iou > iou_threshold
 
-        if centroid_dist_threshold is not None:
+        if diag is not None:
+            # Radius per-pasangan: rata-rata diagonal box i & box pasangannya,
+            # jadi kanopi kecil dan besar masing-masing dapat radius yang
+            # proporsional dengan ukurannya sendiri, bukan radius global.
+            dist = np.sqrt((cx[i] - cx[rest]) ** 2 + (cy[i] - cy[rest]) ** 2)
+            pair_threshold = centroid_dist_factor * (diag[i] + diag[rest]) / 2.0
+            is_duplicate = is_duplicate | (dist <= pair_threshold)
+        elif centroid_dist_threshold is not None:
             dist = np.sqrt((cx[i] - cx[rest]) ** 2 + (cy[i] - cy[rest]) ** 2)
             is_duplicate = is_duplicate | (dist <= centroid_dist_threshold)
 
@@ -422,8 +452,8 @@ class InferenceEngine:
         if not raster_path.is_file():
             raise FileNotFoundError(f"Raster tidak ditemukan: {raster_path}")
 
-        out_dir = Path(output_dir) if output_dir else raster_path.parent
-        out_dir.mkdir(parents=True, exist_ok=True)
+        out_dir_base = Path(output_dir) if output_dir else raster_path.parent
+        out_dir_base.mkdir(parents=True, exist_ok=True)
 
         self.log_fn(f"Membuka raster: {raster_path.name}")
         with rasterio.open(raster_path) as src:
@@ -539,14 +569,22 @@ class InferenceEngine:
 
         self.log_fn(f"Total deteksi sebelum NMS: {len(all_boxes)}")
 
-        centroid_dist_threshold = None
         if centroid_dist_factor is not None:
-            centroid_dist_threshold = estimate_centroid_dist_threshold(
-                all_boxes, factor=centroid_dist_factor, log=self.log_fn,
+            _box_w = all_boxes[:, 2] - all_boxes[:, 0]
+            _box_h = all_boxes[:, 3] - all_boxes[:, 1]
+            _diag = np.sqrt(_box_w ** 2 + _box_h ** 2)
+            _radius = centroid_dist_factor * _diag
+            self.log_fn(
+                f"[NMS] Radius gabung duplikat: mode adaptif per-pasangan "
+                f"(faktor={centroid_dist_factor}). Estimasi rentang radius dari "
+                f"{len(all_boxes)} box -- min={_radius.min():.1f}px, "
+                f"median={float(np.median(_radius)):.1f}px, max={_radius.max():.1f}px "
+                f"(menyesuaikan otomatis untuk kanopi kecil maupun besar dalam "
+                f"raster yang sama, bukan satu radius global)."
             )
 
         keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold,
-                               centroid_dist_threshold=centroid_dist_threshold)
+                               centroid_dist_factor=centroid_dist_factor)
         final_boxes = all_boxes[keep_idx]
         final_scores = all_scores[keep_idx]
         final_classes = all_classes[keep_idx]
@@ -561,6 +599,14 @@ class InferenceEngine:
                     out_stem = out_stem[: -len(ext)]
         else:
             out_stem = f"deteksi_{raster_path.stem}__{model_stem}"
+
+        # Setiap run disimpan dalam FOLDER TERSENDIRI (bukan file lepas di
+        # folder output utama) -- shapefile, jpg preview, dan centroid
+        # geojson/csv (yang otomatis dieksport ke folder shapefile ini juga)
+        # jadi berkumpul rapi per run, tidak bercampur antar run/model lain.
+        out_dir = out_dir_base / out_stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+
         out_shp = out_dir / f"{out_stem}.shp"
         self.log_fn("Menyimpan shapefile...")
         save_shapefile(raster_path, final_boxes, final_scores, final_classes, out_shp,
