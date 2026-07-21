@@ -87,79 +87,88 @@ def pad_tile_for_inference(tile_hwc: np.ndarray, target_size: int = 640) -> np.n
     return np.pad(tile_hwc, ((0, pad_h), (0, pad_w), (0, 0)), mode="constant", constant_values=0)
 
 
-def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5,
-               centroid_dist_threshold: float = None,
-               centroid_dist_factor: float = None,
-               max_radius_px: float = None,
-               tile_ids: np.ndarray = None):
+# ============================================================
+# DEDUPLIKASI TILE-BOUNDARY -- PENDEKATAN "KEPEMILIKAN WILAYAH"
+# ============================================================
+def compute_tile_core_bounds(x_off, y_off, w, h, width, height, overlap):
     """
-    NMS untuk menghapus deteksi duplikat di area overlap antar tile.
+    Hitung wilayah "inti" (core) satu tile -- area yang jadi tanggung jawab
+    TUNGGAL tile ini untuk mendeteksi objek, tanpa berbagi dengan tile
+    tetangga. Ini pengganti pendekatan lama (merge berbasis jarak/IoU
+    sesudah inference) dengan cara yang jauh lebih pasti: alih-alih menebak
+    "dua box ini duplikat atau bukan" dari kemiripan geometrinya (yang bisa
+    salah kalau kanopi kecil & rapat, lihat histori chat), setiap titik di
+    raster SEJAK AWAL cuma "dimiliki" oleh SATU tile saja -- ditentukan murni
+    dari posisi tile itu sendiri, sama sekali tidak bergantung pada isi
+    deteksi. Jadi tidak ada lagi ambiguitas "pohon sama vs pohon beda".
 
-    Root cause duplikat di tepi tile: satu pohon yang sama bisa terdeteksi dua kali
-    dari dua tile yang overlap, dengan bounding box yang SEDIKIT bergeser (bukan
-    persis sama posisinya) -- misalnya kanopi sedikit terpotong di salah satu tile --
-    sehingga IoU-nya kadang jatuh DI BAWAH iou_threshold biasa meski itu pohon yang sama.
+    Aturan: potong separuh lebar overlap dari sisi yang berbatasan dengan
+    tile tetangga (kiri/kanan/atas/bawah), TAPI kalau sisi itu adalah tepi
+    raster asli (tidak ada tetangga di situ), tidak dipotong sama sekali --
+    supaya tidak ada gap yang kehilangan cakupan di pinggir gambar.
 
-    Untuk menutup celah itu, ditambahkan fallback: box dianggap duplikat juga kalau
-    jarak centroid-nya cukup dekat, meskipun IoU rendah. Ada dua mode fallback:
+    Karena generate_tile_windows() selalu memberi overlap yang KONSTAN antar
+    tile bertetangga (termasuk tile terakhir di tiap baris/kolom, karena tile
+    terakhir selalu digeser pas rata ke tepi raster), potongan overlap/2 yang
+    tetap ini otomatis pas untuk semua pasangan tile tanpa perlu kalkulasi
+    khusus per tile.
+    """
+    half = overlap // 2
+    core_x_min = x_off if x_off == 0 else x_off + half
+    core_x_max = (x_off + w) if (x_off + w) >= width else (x_off + w - half)
+    core_y_min = y_off if y_off == 0 else y_off + half
+    core_y_max = (y_off + h) if (y_off + h) >= height else (y_off + h - half)
+    return core_x_min, core_x_max, core_y_min, core_y_max
 
-    1. ADAPTIF (centroid_dist_factor, DIREKOMENDASIKAN): radius merge dihitung
-       PER-PASANGAN kandidat, dari rata-rata diagonal box pasangan itu sendiri
-       (radius = centroid_dist_factor * rata-rata diagonal kedua box). Ini penting
-       kalau dalam satu raster ada campuran kanopi kecil & besar -- radius jadi
-       otomatis kecil untuk pasangan pohon kecil dan besar untuk pasangan pohon
-       besar, tidak memakai satu angka radius global yang sama untuk semua ukuran.
 
-    2. GLOBAL (centroid_dist_threshold, LEGACY): satu radius piksel tetap untuk
-       semua pasangan, dihitung sebelumnya dari median diagonal SELURUH box di
-       gambar (lihat estimate_centroid_dist_threshold). Dipertahankan untuk
-       backward-compat.
+def filter_by_tile_ownership(boxes: np.ndarray, tile_ids: np.ndarray,
+                              windows_by_id: dict, width: int, height: int,
+                              overlap: int) -> np.ndarray:
+    """
+    Buang deteksi yang TITIK TENGAHNYA jatuh di luar wilayah inti tile asalnya
+    (lihat compute_tile_core_bounds). Untuk objek yang muncul di zona overlap
+    dan terdeteksi dari 2 tile berbeda, hanya salinan dari tile yang memang
+    "memiliki" lokasi itu yang dipertahankan -- salinan dari tile lain otomatis
+    tersingkir, TANPA perlu menebak dari jarak/ukuran/IoU sama sekali.
 
-    max_radius_px (PENYEIMBANG untuk mode adaptif): batas ATAS pair_threshold,
-       berapa pun hasil "centroid_dist_factor * rata-rata diagonal" pasangan itu.
-       Alasannya: radius adaptif di atas ikut membesar linear terhadap ukuran box,
-       padahal JARAK TANAM ASLI di lapangan (jarak antar batang pohon) TIDAK ikut
-       membesar cuma karena kanopinya sudah dewasa/lebar -- jarak tanam ditentukan
-       saat penanaman, bukan oleh ukuran kanopi saat ini. Akibatnya, kalau raster
-       berisi campuran kanopi kecil & besar dan dipakai satu factor yang sama,
-       pasangan kanopi BESAR bisa dapat radius merge yang lebih besar dari jarak
-       tanam sesungguhnya -> dua pohon dewasa yang benar-benar berbeda individu
-       (tapi berdekatan sesuai jarak tanam normal) berisiko salah dianggap
-       duplikat dan ke-gabung jadi satu (turunin recall). Nilainya dihitung
-       otomatis oleh pemanggil (InferenceEngine.run) dari persentil-90 diagonal
-       SELURUH box hasil deteksi di raster ini -- tidak perlu diisi manual.
-       Radius pasangan kanopi kecil tetap proporsional kecil (di bawah cap,
-       tidak kepotong), sementara radius pasangan kanopi besar dibatasi supaya
-       tidak pernah jauh melebihi ukuran kanopi "wajar" di raster tsb.
-       None = tidak ada batas (perilaku lama, radius adaptif murni).
+    Return: boolean mask (True = pertahankan).
+    """
+    if len(boxes) == 0:
+        return np.zeros(0, dtype=bool)
 
-    tile_ids: array (sepanjang boxes) berisi indeks tile asal tiap box. Kalau
-        diisi, fallback centroid-distance HANYA diterapkan ke pasangan box yang
-        berasal dari tile BERBEDA. Ini penting: duplikat akibat overlap tile
-        cuma mungkin terjadi antar box dari tile berbeda -- dua pohon ASLI yang
-        kebetulan berdekatan tapi terdeteksi dari tile YANG SAMA bukan kasus
-        duplikat tile-boundary, dan tidak boleh ikut ke-merge hanya karena
-        jaraknya kebetulan di bawah radius. Kalau tile_ids=None, fallback
-        diterapkan ke semua pasangan seperti perilaku lama (kurang presisi,
-        berisiko menghapus pohon berdekatan yang sebenarnya beda individu).
+    max_id = max(tile_ids.max(), max(windows_by_id.keys()))
+    max_id = int(max_id)
+    cxmin_lut = np.zeros(max_id + 1)
+    cxmax_lut = np.zeros(max_id + 1)
+    cymin_lut = np.zeros(max_id + 1)
+    cymax_lut = np.zeros(max_id + 1)
+    for tid, (x_off, y_off, w, h) in windows_by_id.items():
+        bounds = compute_tile_core_bounds(x_off, y_off, w, h, width, height, overlap)
+        cxmin_lut[tid], cxmax_lut[tid], cymin_lut[tid], cymax_lut[tid] = bounds
 
-    Kalau centroid_dist_factor dan centroid_dist_threshold dua-duanya None,
-    perilaku identik dengan NMS lama (murni IoU). Kalau dua-duanya diisi,
-    centroid_dist_factor (adaptif) yang dipakai.
+    cx = (boxes[:, 0] + boxes[:, 2]) / 2.0
+    cy = (boxes[:, 1] + boxes[:, 3]) / 2.0
+
+    core_x_min = cxmin_lut[tile_ids]
+    core_x_max = cxmax_lut[tile_ids]
+    core_y_min = cymin_lut[tile_ids]
+    core_y_max = cymax_lut[tile_ids]
+
+    keep = (cx >= core_x_min) & (cx < core_x_max) & (cy >= core_y_min) & (cy < core_y_max)
+    return keep
+
+
+def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5):
+    """
+    NMS standar berbasis IoU -- membuang box yang tumpang tindih tinggi
+    dengan box skor lebih tinggi. Dipakai SETELAH filter_by_tile_ownership,
+    jadi cukup NMS murni tanpa perlu fallback jarak/centroid lagi -- duplikat
+    tile-boundary sudah selesai di tahap ownership filtering.
     """
     if len(boxes) == 0:
         return []
     x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
     areas = (x2 - x1) * (y2 - y1)
-
-    cx = (x1 + x2) / 2.0
-    cy = (y1 + y2) / 2.0
-
-    diag = None
-    if centroid_dist_factor is not None:
-        box_w = x2 - x1
-        box_h = y2 - y1
-        diag = np.sqrt(box_w ** 2 + box_h ** 2)
 
     order = scores.argsort()[::-1]
     keep = []
@@ -179,71 +188,8 @@ def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5
         iou = inter / (areas[i] + areas[rest] - inter)
 
         is_duplicate = iou > iou_threshold
-
-        if diag is not None or centroid_dist_threshold is not None:
-            dist = np.sqrt((cx[i] - cx[rest]) ** 2 + (cy[i] - cy[rest]) ** 2)
-
-            if diag is not None:
-                # Radius per-pasangan: rata-rata diagonal box i & box pasangannya,
-                # jadi kanopi kecil dan besar masing-masing dapat radius yang
-                # proporsional dengan ukurannya sendiri, bukan radius global.
-                pair_threshold = centroid_dist_factor * (diag[i] + diag[rest]) / 2.0
-            else:
-                pair_threshold = centroid_dist_threshold
-
-            if max_radius_px is not None:
-                # Cap supaya radius pasangan kanopi BESAR tidak pernah melebihi
-                # jarak tanam minimum riil -- lihat penjelasan max_radius_px di
-                # docstring. Pasangan kanopi kecil tidak terpengaruh (nilainya
-                # sudah di bawah cap ini).
-                pair_threshold = np.minimum(pair_threshold, max_radius_px)
-
-            centroid_match = dist <= pair_threshold
-
-            if tile_ids is not None:
-                # Fallback jarak cuma valid untuk pasangan LINTAS TILE -- duplikat
-                # tile-boundary memang cuma bisa terjadi antar tile berbeda.
-                cross_tile = tile_ids[i] != tile_ids[rest]
-                centroid_match = centroid_match & cross_tile
-
-            is_duplicate = is_duplicate | centroid_match
-
         order = rest[~is_duplicate]
     return keep
-
-
-def estimate_centroid_dist_threshold(boxes: np.ndarray, factor: float = 0.5,
-                                      min_detections: int = 20,
-                                      fallback: float = 15.0, log=print) -> float:
-    """
-    Estimasi otomatis centroid_dist_threshold dari ukuran box hasil deteksi itu
-    sendiri (sebelum NMS) -- bukan angka piksel hardcoded.
-
-    Dimensi box yang dihasilkan model adalah proxy langsung untuk ukuran kanopi
-    sawit DI RESOLUSI RASTER INI, jadi threshold otomatis menyesuaikan kalau raster
-    beda GSD (resolusi piksel), tanpa perlu tuning ulang manual tiap raster.
-
-    Pakai MEDIAN (bukan mean) supaya tidak gampang terpengaruh outlier (mis. box
-    salah deteksi yang ukurannya tidak wajar).
-
-    factor: pengali terhadap diagonal box (0.5 = radius kanopi, dari diameter).
-    min_detections: kalau jumlah deteksi kurang dari ini, statistik dianggap belum
-        cukup stabil untuk dipercaya -> pakai fallback.
-    """
-    if len(boxes) < min_detections:
-        log(f"[NMS] Deteksi terlalu sedikit ({len(boxes)}) untuk auto-estimate, "
-            f"pakai fallback: {fallback:.1f}px")
-        return fallback
-
-    box_w = boxes[:, 2] - boxes[:, 0]
-    box_h = boxes[:, 3] - boxes[:, 1]
-    diag = np.sqrt(box_w ** 2 + box_h ** 2)
-    median_diag = float(np.median(diag))
-    threshold = median_diag * factor
-
-    log(f"[NMS] Auto-estimate centroid_dist_threshold dari {len(boxes)} box: "
-        f"median diagonal={median_diag:.2f}px, faktor={factor} -> threshold={threshold:.2f}px")
-    return threshold
 
 
 def auto_detect_band_mapping(src, band_stats: dict, log=print) -> dict:
@@ -340,7 +286,7 @@ def build_preview_bgr(raster_path: Path, boxes: np.ndarray, scores: np.ndarray,
         idx_r = min(3, n_bands)
         idx_g = min(2, n_bands)
         idx_b = min(1, n_bands)
-        
+
         # Read downsampled version to avoid huge memory footprint
         r = src.read(idx_r, out_shape=(h_new, w_new)).astype(np.float32)
         g = src.read(idx_g, out_shape=(h_new, w_new)).astype(np.float32)
@@ -482,22 +428,21 @@ class InferenceEngine:
 
     def run(self, raster_path: str, conf: float = 0.25, tile_size: int = 640,
             overlap: int = 64, iou_threshold: float = 0.5,
-            centroid_dist_factor: float = 0.5,
+            centroid_dist_factor: float = None,
             output_dir: str = None, batch_size: int = 8, out_name: str = None) -> InferenceResult:
         """
-        centroid_dist_factor: faktor pengali terhadap diagonal box untuk fallback
-            centroid-distance di NMS (menutup duplikat tepi tile yang lolos dari
-            IoU biasa). Set None untuk menonaktifkan (NMS murni IoU, perilaku lama).
+        Deduplikasi duplikat tile-boundary sekarang pakai pendekatan "kepemilikan
+        wilayah tile" (lihat filter_by_tile_ownership), BUKAN lagi tebak-tebakan
+        jarak/IoU antar box seperti versi sebelumnya. Setiap titik di raster
+        cuma "dimiliki" oleh satu tile (ditentukan dari posisi tile itu sendiri),
+        sehingga duplikat di zona overlap otomatis tersingkir tanpa perlu
+        menaksir "ini pohon sama atau pohon beda" dari geometrinya -- ini yang
+        dulu gagal di kanopi kecil & rapat (2 pohon beda salah dianggap 1 pohon
+        yang sama karena kebetulan berdekatan).
 
-        Radius merge dihitung ADAPTIF per-pasangan (dari diagonal box pasangan
-        itu sendiri, lihat nms_global), lalu otomatis DIBATASI ke persentil-90
-        diagonal seluruh box di raster ini -- supaya pasangan kanopi yang jauh
-        lebih besar dari kanopi "wajar" di raster tsb tidak dapat radius merge
-        yang kebablasan (bisa salah menggabung dua pohon dewasa berbeda yang
-        cuma kebetulan berdekatan sesuai jarak tanam normal). Ini dihitung
-        otomatis dari statistik deteksi itu sendiri -- tidak perlu input
-        tambahan dari pengguna, dan otomatis menyesuaikan resolusi/skala
-        raster apa pun.
+        centroid_dist_factor: PARAMETER LAMA, dipertahankan untuk kompatibilitas
+            pemanggil lain tapi TIDAK LAGI DIPAKAI oleh logic dedup yang baru.
+            Boleh diisi apa saja, tidak berpengaruh ke hasil.
         """
         if self.model is None:
             self.load()
@@ -531,6 +476,7 @@ class InferenceEngine:
                 band_mapping = auto_detect_band_mapping(src, self.band_stats, log=self.log_fn)
 
             windows = generate_tile_windows(width, height, tile_size, overlap)
+            windows_by_id = {idx: w for idx, w in enumerate(windows, start=1)}
             total = len(windows)
             self.log_fn(f"Akan diproses {total} tile ({tile_size}x{tile_size}, overlap {overlap}px)")
 
@@ -623,45 +569,24 @@ class InferenceEngine:
         all_classes = np.concatenate(all_classes, axis=0)
         all_tile_ids = np.concatenate(all_tile_ids, axis=0)
 
-        self.log_fn(f"Total deteksi sebelum NMS: {len(all_boxes)}")
+        self.log_fn(f"Total deteksi sebelum dedup: {len(all_boxes)}")
 
-        max_radius_px = None
-        if centroid_dist_factor is not None:
-            _box_w = all_boxes[:, 2] - all_boxes[:, 0]
-            _box_h = all_boxes[:, 3] - all_boxes[:, 1]
-            _diag = np.sqrt(_box_w ** 2 + _box_h ** 2)
-            _radius = centroid_dist_factor * _diag
-            self.log_fn(
-                f"[NMS] Radius gabung duplikat: mode adaptif per-pasangan "
-                f"(faktor={centroid_dist_factor}), HANYA berlaku untuk pasangan "
-                f"box lintas-tile. Estimasi rentang radius dari {len(all_boxes)} "
-                f"box -- min={_radius.min():.1f}px, "
-                f"median={float(np.median(_radius)):.1f}px, max={_radius.max():.1f}px."
-            )
+        # --- Tahap 1: Dedup duplikat tile-boundary via kepemilikan wilayah ---
+        ownership_keep = filter_by_tile_ownership(
+            all_boxes, all_tile_ids, windows_by_id, width, height, overlap
+        )
+        n_removed_ownership = int((~ownership_keep).sum())
+        all_boxes = all_boxes[ownership_keep]
+        all_scores = all_scores[ownership_keep]
+        all_classes = all_classes[ownership_keep]
+        self.log_fn(
+            f"[Dedup] Kepemilikan wilayah tile: {n_removed_ownership} deteksi "
+            f"disingkirkan (titik tengahnya jatuh di zona overlap milik tile "
+            f"tetangga, bukan tile ini). Sisa: {len(all_boxes)}."
+        )
 
-            if len(_diag) >= 20:
-                # Batas otomatis: persentil-90 diagonal SELURUH box di raster ini
-                # dipakai sebagai acuan "kanopi wajar terbesar". Radius pasangan
-                # yang lebih besar dari itu (mis. dua box raksasa/outlier) dipangkas
-                # ke batas ini, supaya tidak salah menggabung dua pohon dewasa
-                # berbeda yang cuma kebetulan berdekatan sesuai jarak tanam normal.
-                # Dihitung otomatis dari statistik deteksi itu sendiri -- tidak
-                # butuh input tambahan dari pengguna.
-                ref_diag = float(np.percentile(_diag, 90))
-                max_radius_px = centroid_dist_factor * ref_diag
-                self.log_fn(
-                    f"[NMS] Batas radius otomatis: persentil-90 diagonal "
-                    f"={ref_diag:.1f}px -> radius pasangan dipangkas maks "
-                    f"{max_radius_px:.1f}px."
-                )
-            else:
-                self.log_fn("[NMS] Deteksi terlalu sedikit untuk batas radius "
-                             "otomatis, dilewati (radius adaptif tidak dibatasi).")
-
-        keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold,
-                               centroid_dist_factor=centroid_dist_factor,
-                               max_radius_px=max_radius_px,
-                               tile_ids=all_tile_ids)
+        # --- Tahap 2: NMS IoU standar (bersihkan sisa duplikat DALAM 1 tile) ---
+        keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold)
         final_boxes = all_boxes[keep_idx]
         final_scores = all_scores[keep_idx]
         final_classes = all_classes[keep_idx]
