@@ -992,8 +992,15 @@ def _read_crs_wkt(source_path):
             if "EPSG" in name.upper():
                 digits = "".join(ch for ch in name if ch.isdigit())
                 if digits:
-                    return _WKT_BY_EPSG.get(digits, _WKT_WGS84)
-        # RFC 7946: GeoJSON tanpa "crs" = WGS84
+                    wkt = _wkt_from_epsg(digits)
+                    if wkt:
+                        return wkt
+            # crs eksplisit ada tapi kodenya tidak bisa di-resolve -- JANGAN
+            # diam-diam anggap WGS84 (itu penyebab titik lompat keluar
+            # raster kalau aslinya UTM). Biarkan None supaya caller coba
+            # sumber CRS lain (mis. .prj milik hasil model).
+            return None
+        # RFC 7946: GeoJSON TANPA "crs" eksplisit = wajib WGS84 (lon/lat).
         return _WKT_WGS84
 
     return None
@@ -1007,8 +1014,83 @@ _WKT_WGS84 = (
     'UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],'
     'AUTHORITY["EPSG","4326"]]'
 )
-# Extend kalau nanti butuh EPSG lain di GeoJSON lama -- untuk sekarang cukup 4326.
-_WKT_BY_EPSG = {"4326": _WKT_WGS84}
+try:
+    from pyproj import CRS as _PyprojCRS
+    from pyproj.exceptions import CRSError as _PyprojCRSError
+    from pyproj.enums import WktVersion as _PyprojWktVersion
+except ImportError:  # seharusnya tidak pernah kejadian di exe hasil build
+    # (pyproj dibundel lewat build.spec), tapi dijaga biar app tetap jalan
+    # walau lebih terbatas cakupan CRS-nya kalau entah kenapa hilang.
+    _PyprojCRS = None
+
+
+def _wkt_from_epsg(epsg_code):
+    """Bangun WKT dari kode EPSG APAPUN lewat database EPSG resmi (pyproj) --
+    UTM zona manapun, geografis, datum lokal, proyeksi apapun, semua otomatis
+    benar tanpa perlu daftar manual per kamera/CRS baru.
+
+    Kalau pyproj entah kenapa tidak tersedia di runtime, fallback ke builder
+    manual yang cuma menangani WGS84 (4326) + UTM WGS84 zona 1-60 N/S --
+    supaya app tetap jalan (cakupan CRS lebih sempit) daripada crash total.
+
+    PENTING: return None kalau kode EPSG-nya benar-benar tidak bisa
+    di-resolve -- JANGAN diam-diam anggap WGS84. Versi lama kode ini pakai
+    dict statis {"4326": WGS84} dan fallback ke WGS84 untuk EPSG apapun yang
+    tidak ada di dict (termasuk UTM seperti 32748) -- akibatnya file manual
+    ground truth yang eksplisit UTM malah ditulis ulang dengan tag CRS WGS84,
+    padahal koordinatnya tetap meter UTM. QGIS lalu membaca titik itu seolah
+    lon/lat derajat -> titik "lompat" jauh keluar dari extent raster (paling
+    kelihatan di FN karena koordinatnya murni dari file manual, tapi TP/FP
+    dari model yang sama ikut kena juga).
+    """
+    try:
+        code = int(epsg_code)
+    except (TypeError, ValueError):
+        return None
+
+    if _PyprojCRS is not None:
+        try:
+            # WKT1_GDAL (bukan default WKT2) supaya formatnya tetap pakai
+            # blok AUTHORITY["EPSG","..."] klasik -- kompatibel dengan
+            # _extract_epsg_from_wkt() di bawah dan paling luas didukung
+            # software GIS lama (ArcGIS, QGIS versi lawas, dst).
+            return _PyprojCRS.from_epsg(code).to_wkt(_PyprojWktVersion.WKT1_GDAL)
+        except _PyprojCRSError:
+            return None  # kode EPSG tidak valid/tidak dikenal pyproj
+
+    return _wkt_from_epsg_fallback(code)
+
+
+def _wkt_from_epsg_fallback(code):
+    """Fallback manual kalau pyproj tidak tersedia di runtime. Cuma cover
+    WGS84 (4326) + UTM WGS84 zona 1-60 N/S (326xx/327xx) -- termasuk
+    32748/32749/32750 yang umum dipakai untuk citra drone Indonesia."""
+    if code == 4326:
+        return _WKT_WGS84
+    if 32601 <= code <= 32660:
+        zone, hemi, false_northing = code - 32600, "N", 0
+    elif 32701 <= code <= 32760:
+        zone, hemi, false_northing = code - 32700, "S", 10000000
+    else:
+        return None
+    central_meridian = -183 + zone * 6
+    return (
+        f'PROJCS["WGS 84 / UTM zone {zone}{hemi}",'
+        'GEOGCS["WGS 84",DATUM["WGS_1984",'
+        'SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],'
+        'AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,'
+        'AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,'
+        'AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]],'
+        'PROJECTION["Transverse_Mercator"],'
+        'PARAMETER["latitude_of_origin",0],'
+        f'PARAMETER["central_meridian",{central_meridian}],'
+        'PARAMETER["scale_factor",0.9996],'
+        'PARAMETER["false_easting",500000],'
+        f'PARAMETER["false_northing",{false_northing}],'
+        'UNIT["metre",1,AUTHORITY["EPSG","9001"]],'
+        'AXIS["Easting",EAST],AXIS["Northing",NORTH],'
+        f'AUTHORITY["EPSG","{code}"]]'
+    )
 
 
 def _write_prj(dest_shp_path, wkt):

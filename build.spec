@@ -40,6 +40,18 @@ for pkg in ["ultralytics"]:
     binaries += b
     hiddenimports += h
 
+# --- pyproj: dipakai model_comparison.py buat resolve CRS/EPSG apapun (UTM,
+# datum lokal, dll) pas export hasil Pembanding Model. WAJIB collect_all,
+# bukan cuma hiddenimports -- pyproj butuh proj.db (database EPSG) yang
+# didaftarkan sebagai data file, bukan modul python biasa. Tanpa ini exe
+# akan crash "PROJ: proj_create_from_database: Cannot find proj.db" begitu
+# fitur Pembanding Model coba baca/tulis CRS.
+for pkg in ["pyproj"]:
+    d, b, h = collect_all(pkg)
+    datas += d
+    binaries += b
+    hiddenimports += h
+
 # --- torch/torchvision: JANGAN pakai collect_all -- itu narik SEMUA submodule
 # termasuk testing internals, distributed training, quantization, dll yang gak
 # kepake buat inference single-GPU biasa dan bikin ukuran bengkak parah (GB-an).

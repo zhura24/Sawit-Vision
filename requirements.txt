@@ -6,6 +6,7 @@ pyshp
 scipy
 openpyxl
 ultralytics
+pyproj
 pyinstaller
 
 # torch: install manual sesuai versi CUDA kamu, JANGAN lewat requirements.txt ini.
