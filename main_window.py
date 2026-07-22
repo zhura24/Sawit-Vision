@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
     QToolBar, QToolButton, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem
 )
 
 from inference_core import (
@@ -57,6 +58,8 @@ APP_TITLE_FULL = f"{APP_TITLE} \u2014 {APP_SUBTITLE}"
 # ============================================================
 # IKON -- digambar inline (vector, satu warna), tanpa aset eksternal
 # ============================================================
+
+
 class Icons:
     _cache = {}
 
@@ -106,7 +109,14 @@ def _draw_raster(p, s, c):
 
 
 def _draw_model(p, s, c):
-    p.drawRoundedRect(QRectF(s * 0.26, s * 0.26, s * 0.48, s * 0.48), s * 0.06, s * 0.06)
+    p.drawRoundedRect(
+        QRectF(
+            s * 0.26,
+            s * 0.26,
+            s * 0.48,
+            s * 0.48),
+        s * 0.06,
+        s * 0.06)
     for f in (0.36, 0.5, 0.64):
         p.drawLine(QPointF(s * f, s * 0.10), QPointF(s * f, s * 0.26))
         p.drawLine(QPointF(s * f, s * 0.74), QPointF(s * f, s * 0.90))
@@ -125,27 +135,48 @@ def _draw_bandstats(p, s, c):
 def _draw_run(p, s, c):
     p.setBrush(QBrush(c))
     p.setPen(Qt.PenStyle.NoPen)
-    p.drawPolygon(_poly([(s * 0.28, s * 0.18), (s * 0.28, s * 0.82), (s * 0.82, s * 0.5)]))
+    p.drawPolygon(
+        _poly([(s * 0.28, s * 0.18), (s * 0.28, s * 0.82), (s * 0.82, s * 0.5)]))
 
 
 def _draw_stop(p, s, c):
     p.setBrush(QBrush(c))
     p.setPen(Qt.PenStyle.NoPen)
-    p.drawRoundedRect(QRectF(s * 0.24, s * 0.24, s * 0.52, s * 0.52), s * 0.08, s * 0.08)
+    p.drawRoundedRect(
+        QRectF(
+            s * 0.24,
+            s * 0.24,
+            s * 0.52,
+            s * 0.52),
+        s * 0.08,
+        s * 0.08)
 
 
 def _draw_export(p, s, c):
     p.drawLine(QPointF(s * 0.5, s * 0.12), QPointF(s * 0.5, s * 0.56))
-    p.drawPolyline(_poly([(s * 0.32, s * 0.4), (s * 0.5, s * 0.58), (s * 0.68, s * 0.4)]))
-    p.drawPolyline(_poly([
-        (s * 0.16, s * 0.68), (s * 0.16, s * 0.86), (s * 0.84, s * 0.86), (s * 0.84, s * 0.68),
-    ]))
+    p.drawPolyline(
+        _poly([(s * 0.32, s * 0.4), (s * 0.5, s * 0.58), (s * 0.68, s * 0.4)]))
+    p.drawPolyline(_poly([(s *
+                           0.16, s *
+                           0.68), (s *
+                                   0.16, s *
+                                   0.86), (s *
+                                           0.84, s *
+                                           0.86), (s *
+                                                   0.84, s *
+                                                   0.68), ]))
 
 
 def _draw_clear(p, s, c):
-    p.drawPolyline(_poly([
-        (s * 0.24, s * 0.28), (s * 0.28, s * 0.86), (s * 0.72, s * 0.86), (s * 0.76, s * 0.28),
-    ]))
+    p.drawPolyline(_poly([(s *
+                           0.24, s *
+                           0.28), (s *
+                                   0.28, s *
+                                   0.86), (s *
+                                           0.72, s *
+                                           0.86), (s *
+                                                   0.76, s *
+                                                   0.28), ]))
     p.drawLine(QPointF(s * 0.16, s * 0.28), QPointF(s * 0.84, s * 0.28))
     p.drawLine(QPointF(s * 0.38, s * 0.16), QPointF(s * 0.62, s * 0.16))
     p.drawLine(QPointF(s * 0.62, s * 0.16), QPointF(s * 0.68, s * 0.28))
@@ -242,7 +273,8 @@ def _draw_reset(p, s, c):
     p.drawArc(rect, 30 * 16, 300 * 16)
     p.setBrush(QBrush(c))
     p.setPen(Qt.PenStyle.NoPen)
-    p.drawPolygon(_poly([(s * 0.78, s * 0.16), (s * 0.9, s * 0.32), (s * 0.66, s * 0.34)]))
+    p.drawPolygon(
+        _poly([(s * 0.78, s * 0.16), (s * 0.9, s * 0.32), (s * 0.66, s * 0.34)]))
 
 
 def _draw_actual_size(p, s, c):
@@ -250,24 +282,58 @@ def _draw_actual_size(p, s, c):
     f = QFont("Segoe UI", int(s * 0.28))
     f.setBold(True)
     p.setFont(f)
-    p.drawText(QRectF(s * 0.14, s * 0.14, s * 0.72, s * 0.72), Qt.AlignmentFlag.AlignCenter, "1:1")
+    p.drawText(
+        QRectF(
+            s * 0.14,
+            s * 0.14,
+            s * 0.72,
+            s * 0.72),
+        Qt.AlignmentFlag.AlignCenter,
+        "1:1")
 
 
 def _draw_save_image(p, s, c):
-    p.drawRoundedRect(QRectF(s * 0.16, s * 0.14, s * 0.68, s * 0.72), s * 0.05, s * 0.05)
+    p.drawRoundedRect(
+        QRectF(
+            s * 0.16,
+            s * 0.14,
+            s * 0.68,
+            s * 0.72),
+        s * 0.05,
+        s * 0.05)
     p.drawRect(QRectF(s * 0.3, s * 0.14, s * 0.4, s * 0.2))
     p.drawRect(QRectF(s * 0.28, s * 0.5, s * 0.44, s * 0.28))
 
 
 def _draw_folder(p, s, c):
-    p.drawPolyline(_poly([
-        (s * 0.14, s * 0.3), (s * 0.14, s * 0.22), (s * 0.4, s * 0.22), (s * 0.46, s * 0.3),
-    ]))
-    p.drawRoundedRect(QRectF(s * 0.14, s * 0.3, s * 0.72, s * 0.5), s * 0.04, s * 0.04)
+    p.drawPolyline(_poly([(s *
+                           0.14, s *
+                           0.3), (s *
+                                  0.14, s *
+                                  0.22), (s *
+                   0.4, s *
+                   0.22), (s *
+                           0.46, s *
+                           0.3), ]))
+    p.drawRoundedRect(
+        QRectF(
+            s * 0.14,
+            s * 0.3,
+            s * 0.72,
+            s * 0.5),
+        s * 0.04,
+        s * 0.04)
 
 
 def _draw_gpu(p, s, c):
-    p.drawRoundedRect(QRectF(s * 0.26, s * 0.26, s * 0.48, s * 0.48), s * 0.06, s * 0.06)
+    p.drawRoundedRect(
+        QRectF(
+            s * 0.26,
+            s * 0.26,
+            s * 0.48,
+            s * 0.48),
+        s * 0.06,
+        s * 0.06)
     for f in (0.4, 0.5, 0.6):
         p.drawLine(QPointF(s * f, s * 0.1), QPointF(s * f, s * 0.26))
         p.drawLine(QPointF(s * f, s * 0.74), QPointF(s * f, s * 0.9))
@@ -302,11 +368,13 @@ def _draw_grid(p, s, c):
 
 
 def _draw_chevron_down(p, s, c):
-    p.drawPolyline(_poly([(s * 0.26, s * 0.38), (s * 0.5, s * 0.62), (s * 0.74, s * 0.38)]))
+    p.drawPolyline(
+        _poly([(s * 0.26, s * 0.38), (s * 0.5, s * 0.62), (s * 0.74, s * 0.38)]))
 
 
 def _draw_chevron_right(p, s, c):
-    p.drawPolyline(_poly([(s * 0.38, s * 0.24), (s * 0.62, s * 0.5), (s * 0.38, s * 0.76)]))
+    p.drawPolyline(
+        _poly([(s * 0.38, s * 0.24), (s * 0.62, s * 0.5), (s * 0.38, s * 0.76)]))
 
 
 def _draw_close(p, s, c):
@@ -315,11 +383,21 @@ def _draw_close(p, s, c):
 
 
 def _draw_file(p, s, c):
-    p.drawPolyline(_poly([
-        (s * 0.28, s * 0.12), (s * 0.6, s * 0.12), (s * 0.76, s * 0.28), (s * 0.76, s * 0.88),
-        (s * 0.28, s * 0.88), (s * 0.28, s * 0.12),
-    ]))
-    p.drawPolyline(_poly([(s * 0.6, s * 0.12), (s * 0.6, s * 0.28), (s * 0.76, s * 0.28)]))
+    p.drawPolyline(_poly([(s *
+                           0.28, s *
+                           0.12), (s *
+                                   0.6, s *
+                                   0.12), (s *
+                                           0.76, s *
+                                           0.28), (s *
+                                                   0.76, s *
+                                                   0.88), (s *
+                                                           0.28, s *
+                                                           0.88), (s *
+                                                                   0.28, s *
+                                                                   0.12), ]))
+    p.drawPolyline(
+        _poly([(s * 0.6, s * 0.12), (s * 0.6, s * 0.28), (s * 0.76, s * 0.28)]))
     p.drawLine(QPointF(s * 0.38, s * 0.5), QPointF(s * 0.66, s * 0.5))
     p.drawLine(QPointF(s * 0.38, s * 0.64), QPointF(s * 0.66, s * 0.64))
 
@@ -334,9 +412,15 @@ def _draw_trash(p, s, c):
     p.drawLine(QPointF(s * 0.38, s * 0.28), QPointF(s * 0.4, s * 0.16))
     p.drawLine(QPointF(s * 0.4, s * 0.16), QPointF(s * 0.6, s * 0.16))
     p.drawLine(QPointF(s * 0.6, s * 0.16), QPointF(s * 0.62, s * 0.28))
-    p.drawPolyline(_poly([
-        (s * 0.28, s * 0.32), (s * 0.32, s * 0.86), (s * 0.68, s * 0.86), (s * 0.72, s * 0.32),
-    ]))
+    p.drawPolyline(_poly([(s *
+                           0.28, s *
+                           0.32), (s *
+                                   0.32, s *
+                                   0.86), (s *
+                                           0.68, s *
+                                           0.86), (s *
+                                                   0.72, s *
+                                                   0.32), ]))
     p.drawLine(QPointF(s * 0.42, s * 0.42), QPointF(s * 0.44, s * 0.76))
     p.drawLine(QPointF(s * 0.58, s * 0.42), QPointF(s * 0.56, s * 0.76))
 
@@ -356,16 +440,36 @@ def _draw_compare(p, s, c):
 
 
 _ICON_DRAWERS = {
-    "raster": _draw_raster, "model": _draw_model, "bandstats": _draw_bandstats,
-    "run": _draw_run, "stop": _draw_stop, "export": _draw_export, "clear": _draw_clear,
-    "settings": _draw_settings, "about": _draw_about, "theme_sun": _draw_theme_sun,
-    "theme_moon": _draw_theme_moon, "zoom_in": _draw_zoom_in, "zoom_out": _draw_zoom_out,
-    "fit": _draw_fit, "reset": _draw_reset, "actual_size": _draw_actual_size,
-    "save_image": _draw_save_image, "folder": _draw_folder, "gpu": _draw_gpu,
-    "target": _draw_target, "percent": _draw_percent, "clock": _draw_clock,
-    "grid": _draw_grid, "chevron_down": _draw_chevron_down,
-    "chevron_right": _draw_chevron_right, "close": _draw_close,
-    "compare": _draw_compare, "add": _draw_add, "trash": _draw_trash, "file": _draw_file,
+    "raster": _draw_raster,
+    "model": _draw_model,
+    "bandstats": _draw_bandstats,
+    "run": _draw_run,
+    "stop": _draw_stop,
+    "export": _draw_export,
+    "clear": _draw_clear,
+    "settings": _draw_settings,
+    "about": _draw_about,
+    "theme_sun": _draw_theme_sun,
+    "theme_moon": _draw_theme_moon,
+    "zoom_in": _draw_zoom_in,
+    "zoom_out": _draw_zoom_out,
+    "fit": _draw_fit,
+    "reset": _draw_reset,
+    "actual_size": _draw_actual_size,
+    "save_image": _draw_save_image,
+    "folder": _draw_folder,
+    "gpu": _draw_gpu,
+    "target": _draw_target,
+    "percent": _draw_percent,
+    "clock": _draw_clock,
+    "grid": _draw_grid,
+    "chevron_down": _draw_chevron_down,
+    "chevron_right": _draw_chevron_right,
+    "close": _draw_close,
+    "compare": _draw_compare,
+    "add": _draw_add,
+    "trash": _draw_trash,
+    "file": _draw_file,
 }
 
 
@@ -538,18 +642,29 @@ QTableWidget, QListWidget {
 }
 """
 
+
 def build_qss(tokens: dict) -> str:
     return QSS_TEMPLATE % tokens
+
 
 DARK_QSS = build_qss(DARK_TOKENS)
 LIGHT_QSS = build_qss(LIGHT_TOKENS)
 
-STAGES = ["Model", "Raster", "Tile", "YOLO", "NMS", "Shapefile", "Preview", "Selesai"]
+STAGES = [
+    "Model",
+    "Raster",
+    "Tile",
+    "YOLO",
+    "NMS",
+    "Shapefile",
+    "Preview",
+    "Selesai"]
 _STAGE_TRIGGERS = [
     ("memuat model", 0), ("membuka raster", 1), ("akan diproses", 2),
     ("batch selesai", 3), ("total deteksi sebelum nms", 4),
     ("menyimpan shapefile", 5), ("membuat preview visual", 6),
 ]
+
 
 def detect_stage(log_line: str, current: int) -> int:
     low = log_line.lower()
@@ -557,6 +672,7 @@ def detect_stage(log_line: str, current: int) -> int:
         if keyword in low and idx >= current:
             return idx
     return current
+
 
 def classify_log(msg: str) -> str:
     low = msg.lower()
@@ -575,9 +691,19 @@ class InferenceWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, model_path, stats_path, raster_path, conf, tile_size,
-                 overlap, batch_size=8, output_dir=None, out_name=None, force_cpu=False,
-                 centroid_dist_factor=0.5):
+    def __init__(
+            self,
+            model_path,
+            stats_path,
+            raster_path,
+            conf,
+            tile_size,
+            overlap,
+            batch_size=8,
+            output_dir=None,
+            out_name=None,
+            force_cpu=False,
+            centroid_dist_factor=0.5):
         super().__init__()
         self.model_path = model_path
         self.stats_path = stats_path
@@ -599,7 +725,8 @@ class InferenceWorker(QObject):
     def run(self):
         try:
             if self.force_cpu:
-                self._prev_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+                self._prev_cuda_visible = os.environ.get(
+                    "CUDA_VISIBLE_DEVICES")
                 os.environ["CUDA_VISIBLE_DEVICES"] = ""
                 self.log.emit("Mode 'Paksa CPU' aktif.")
             engine = InferenceEngine(
@@ -685,22 +812,26 @@ class CanvasView(QGraphicsView):
         self._zoom = 1.0
         self._overlay_items = []
         self._current_result = None
-        self.setRenderHints(self.renderHints() | QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
+        self.setRenderHints(self.renderHints(
+        ) | QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setTransformationAnchor(
+            QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self._placeholder()
 
     def _placeholder(self):
         self.scene_.clear()
         self.pixmap_item = None
-        text = self.scene_.addText("Belum ada raster dimuat.\nBuka raster (.tif) untuk mulai.")
+        text = self.scene_.addText(
+            "Belum ada raster dimuat.\nBuka raster (.tif) untuk mulai.")
         text.setDefaultTextColor(Qt.GlobalColor.gray)
 
     def show_bgr_image(self, bgr: np.ndarray):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         rgb = np.ascontiguousarray(rgb)
         h, w, ch = rgb.shape
-        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+        qimg = QImage(rgb.data, w, h, ch *
+                      w, QImage.Format.Format_RGB888).copy()
         pixmap = QPixmap.fromImage(qimg)
         self.scene_.clear()
         self.pixmap_item = QGraphicsPixmapItem(pixmap)
@@ -717,17 +848,15 @@ class CanvasView(QGraphicsView):
             return
         if result is None or len(result.boxes) == 0:
             return
-        for idx, (box, score, cls_id) in enumerate(zip(result.boxes, result.scores, result.classes)):
+        for idx, (box, score, cls_id) in enumerate(
+                zip(result.boxes, result.scores, result.classes)):
             x1, y1, x2, y2 = [int(round(v)) for v in box]
             rect = QGraphicsRectItem(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
             rect.setPen(QPen(QColor(0, 255, 0), 2))
             rect.setBrush(QBrush(QColor(0, 255, 0, 0)))
             rect.setFlag(QGraphicsItem.ItemIsSelectable, True)
-            rect.setData(0, {
-                "index": idx, "box": box, "score": float(score),
-                "class_id": int(cls_id),
-                "class_name": str(class_names[int(cls_id)] if class_names and 0 <= int(cls_id) < len(class_names) else int(cls_id)),
-            })
+            rect.setData(0, {"index": idx, "box": box, "score": float(score), "class_id": int(cls_id), "class_name": str(
+                class_names[int(cls_id)] if class_names and 0 <= int(cls_id) < len(class_names) else int(cls_id)), })
             self.scene_.addItem(rect)
             self._overlay_items.append(rect)
 
@@ -768,7 +897,9 @@ class CanvasView(QGraphicsView):
     def fit_to_view(self):
         if self.pixmap_item is not None:
             self.resetTransform()
-            self.fitInView(self.pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self.fitInView(
+                self.pixmap_item,
+                Qt.AspectRatioMode.KeepAspectRatio)
             self._zoom = self.transform().m11()
             self.zoomChanged.emit(self._zoom)
 
@@ -818,8 +949,16 @@ class LogConsole(QPlainTextEdit):
         level = level or classify_log(message)
         ts = datetime.now().strftime("%H:%M:%S")
         color = self.LEVEL_COLORS.get(level, "#cbd5e1")
-        safe = (message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        html = f'<span style="color:#64748b;">[{ts}]</span> <span style="color:{color}; font-weight:600;">{level:<7}</span> <span>{safe}</span>'
+        safe = (
+            message.replace(
+                "&",
+                "&amp;").replace(
+                "<",
+                "&lt;").replace(
+                ">",
+                "&gt;"))
+        html = f'<span style="color:#64748b;">[{ts}]</span> <span style="color:{color}; font-weight:600;">{
+            level:<7}</span> <span>{safe}</span>'
         self.appendHtml(html)
         sb = self.verticalScrollBar()
         sb.setValue(sb.maximum())
@@ -935,12 +1074,16 @@ class SettingsDialog(QDialog):
 
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(["Gelap (Dark)", "Terang (Light)"])
-        self.theme_combo.setCurrentIndex(0 if current.get("theme", "dark") == "dark" else 1)
+        self.theme_combo.setCurrentIndex(
+            0 if current.get(
+                "theme", "dark") == "dark" else 1)
         form.addRow("Tema:", self.theme_combo)
 
         self.gpu_combo = QComboBox()
         self.gpu_combo.addItems(["Otomatis (deteksi CUDA)", "Paksa CPU"])
-        self.gpu_combo.setCurrentIndex(1 if current.get("force_cpu", False) else 0)
+        self.gpu_combo.setCurrentIndex(
+            1 if current.get(
+                "force_cpu", False) else 0)
         form.addRow("Mode GPU:", self.gpu_combo)
 
         self.conf_spin = QDoubleSpinBox()
@@ -968,7 +1111,8 @@ class SettingsDialog(QDialog):
 
         out_row = QHBoxLayout()
         self.output_edit = QLineEdit(current.get("output_dir", ""))
-        self.output_edit.setPlaceholderText("(default: folder yang sama dengan raster)")
+        self.output_edit.setPlaceholderText(
+            "(default: folder yang sama dengan raster)")
         btn_browse = QPushButton("Pilih...")
         btn_browse.clicked.connect(self._browse_output)
         out_row.addWidget(self.output_edit, 1)
@@ -977,7 +1121,8 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -1027,7 +1172,8 @@ class AboutDialog(QDialog):
 
         try:
             cuda_available = torch.cuda.is_available()
-            cuda_txt = torch.cuda.get_device_name(0) if cuda_available else "Tidak tersedia"
+            cuda_txt = torch.cuda.get_device_name(
+                0) if cuda_available else "Tidak tersedia"
             torch_cuda_version = torch.version.cuda or "-"
         except Exception:
             cuda_txt, torch_cuda_version = "Tidak diketahui", "-"
@@ -1080,14 +1226,15 @@ class SawitChanWidget(QLabel):
         self.state = 'walk'
         self.direction = 'right'
         self.current_frame = 0
-        
-        # POSISI AWAL AMAN DI ATAS LANTAI CANVAS PREVIEW (DALAM KOORDINAT WINDOW UTAMA)
-        self.x_pos = 380.0  
-        self.y_pos = 650.0  
-        self.speed = 0.5    
-        
+
+        # POSISI AWAL AMAN DI ATAS LANTAI CANVAS PREVIEW (DALAM KOORDINAT
+        # WINDOW UTAMA)
+        self.x_pos = 380.0
+        self.y_pos = 650.0
+        self.speed = 0.5
+
         self.load_and_process_sprites()
-        
+
         self.bubble = QLabel(parent)
         self.bubble.setStyleSheet("""
             QLabel {
@@ -1103,15 +1250,15 @@ class SawitChanWidget(QLabel):
         """)
         self.bubble.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bubble.hide()
-        
+
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.next_frame)
         self.anim_timer.start(150)
-        
+
         self.move_timer = QTimer(self)
         self.move_timer.timeout.connect(self.update_position)
         self.move_timer.start(30)
-        
+
         self.state_timer = QTimer(self)
         self.state_timer.timeout.connect(self.randomize_state)
         self.state_timer.start(8000)
@@ -1125,7 +1272,7 @@ class SawitChanWidget(QLabel):
         self._drag_active = False
         self._drag_start_global = None
         self._drag_start_pos = None
-        
+
         self.update_display()
         if any(self.sprites.values()):
             self.show()
@@ -1138,7 +1285,7 @@ class SawitChanWidget(QLabel):
             self._drag_start_pos = self.pos()
             self._target_x = float(self.pos().x())
             self._target_y = float(self.pos().y())
-            
+
             self.move_timer.stop()
             self.state = 'interact'
             self.current_frame = 0
@@ -1152,21 +1299,22 @@ class SawitChanWidget(QLabel):
             delta = event.globalPosition().toPoint() - self._drag_start_global
             new_x = self._drag_start_pos.x() + delta.x()
             new_y = self._drag_start_pos.y() + delta.y()
-            
+
             parent_w = self.parent().width()
             parent_h = self.parent().height()
-            
+
             self._target_x = float(max(0, min(new_x, parent_w - self.width())))
-            self._target_y = float(max(0, min(new_y, parent_h - self.height())))
+            self._target_y = float(
+                max(0, min(new_y, parent_h - self.height())))
             event.accept()
 
     def _smooth_drag_update(self):
-        factor = 0.15 
+        factor = 0.15
         self.x_pos += (self._target_x - self.x_pos) * factor
         self.y_pos += (self._target_y - self.y_pos) * factor
-        
+
         self.move(int(self.x_pos), int(self.y_pos))
-        
+
         if self.bubble.isVisible():
             bx = int(self.x_pos + (self.width() - self.bubble.width()) / 2)
             bx = max(5, bx)
@@ -1180,18 +1328,19 @@ class SawitChanWidget(QLabel):
                 self._drag_active = False
                 self.drag_timer.stop()
                 self.setCursor(Qt.CursorShape.ArrowCursor)
-                
+
                 delta_x = abs(self.x_pos - self._drag_start_pos.x())
                 delta_y = abs(self.y_pos - self._drag_start_pos.y())
-                
+
                 if delta_x < 5 and delta_y < 5:
                     self.trigger_interaction()
                 else:
-                    # Kunci posisi Y saat ini sebagai lantai jalan baru agar tidak reset
+                    # Kunci posisi Y saat ini sebagai lantai jalan baru agar
+                    # tidak reset
                     self.y_pos = float(self.pos().y())
                     self._target_y = self.y_pos
                     QTimer.singleShot(200, self._resume_after_drag)
-                    
+
                 event.accept()
 
     def _resume_after_drag(self):
@@ -1200,7 +1349,7 @@ class SawitChanWidget(QLabel):
         self.bubble.hide()
         self.move_timer.start(30)
         self.update_display()
-            
+
     def is_gpu_active(self):
         parent = self.parent()
         if not parent:
@@ -1208,7 +1357,9 @@ class SawitChanWidget(QLabel):
         force_cpu = False
         if hasattr(parent, "settings"):
             val = parent.settings.value("force_cpu", False)
-            force_cpu = (str(val).lower() == 'true') if not isinstance(val, bool) else val
+            force_cpu = (
+                str(val).lower() == 'true') if not isinstance(
+                val, bool) else val
         import torch
         try:
             return torch.cuda.is_available() and not force_cpu
@@ -1219,33 +1370,50 @@ class SawitChanWidget(QLabel):
         import random
         gpu_active = self.is_gpu_active()
         self._click_count = getattr(self, '_click_count', 0) + 1
-        
+
         if self._click_count >= 5:
-            phrases = ["Aduh diklik mulu sih! 😤", "Iya iya aku tau, stop klik aku! 😒", "Kerjain sawitnya dulu sana! 😑", "Hei, aku lagi jalan nih! 😠"]
+            phrases = [
+                "Aduh diklik mulu sih! 😤",
+                "Iya iya aku tau, stop klik aku! 😒",
+                "Kerjain sawitnya dulu sana! 😑",
+                "Hei, aku lagi jalan nih! 😠"]
         elif gpu_active:
-            phrases = ["Halo! ✨", "Sawit Vision siap! 🌴", "Jangan diklik mulu dong 😅", "Semangat ya! 😊", "Lagi patroli nih... 🌿", "Ada apa? 👀", "GPU nyala, gas! ⚡", "Cuaca bagus hari ini! ☀️"]
+            phrases = [
+                "Halo! ✨",
+                "Sawit Vision siap! 🌴",
+                "Jangan diklik mulu dong 😅",
+                "Semangat ya! 😊",
+                "Lagi patroli nih... 🌿",
+                "Ada apa? 👀",
+                "GPU nyala, gas! ⚡",
+                "Cuaca bagus hari ini! ☀️"]
         else:
-            phrases = ["Halo! ✨", "GPU-nya off... sabar ya! 🐢", "Lagi agak lambat nih 😅", "Kalau GPU nyala lebih cepet! ⚡", "CPU mode, tapi tetep jalan! ⚙️"]
-        
+            phrases = [
+                "Halo! ✨",
+                "GPU-nya off... sabar ya! 🐢",
+                "Lagi agak lambat nih 😅",
+                "Kalau GPU nyala lebih cepet! ⚡",
+                "CPU mode, tapi tetep jalan! ⚙️"]
+
         self.state = 'interact'
         self.current_frame = 0
         self.update_display()
-        
+
         text = random.choice(phrases)
         self.bubble.setText(text)
         self.bubble.adjustSize()
-        
+
         bx = int(self.x_pos + (self.width() - self.bubble.width()) / 2)
-        bx = max(5, bx) 
+        bx = max(5, bx)
         by = int(self.y_pos) - self.bubble.height() - 4
         by = max(2, by)
         self.bubble.move(bx, by)
         self.bubble.show()
         self.bubble.raise_()
-        
+
         if self._click_count >= 7:
             QTimer.singleShot(5000, lambda: setattr(self, '_click_count', 0))
-        
+
         QTimer.singleShot(2200, self.stop_interaction)
 
     def stop_interaction(self):
@@ -1257,14 +1425,26 @@ class SawitChanWidget(QLabel):
     def load_and_process_sprites(self):
         import sys as _sys
         candidates = [
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "sawit-chan.png"),
-            os.path.join(os.getcwd(), "sawit-chan.png"),
+            os.path.join(
+                os.path.dirname(
+                    os.path.abspath(__file__)),
+                "sawit-chan.png"),
+            os.path.join(
+                os.getcwd(),
+                "sawit-chan.png"),
             r"C:\Users\user\Downloads\Savvision\sawit-chan.png",
         ]
         if getattr(_sys, "frozen", False):
-            candidates.insert(0, os.path.join(os.path.dirname(_sys.executable), "sawit-chan.png"))
+            candidates.insert(
+                0,
+                os.path.join(
+                    os.path.dirname(
+                        _sys.executable),
+                    "sawit-chan.png"))
             if hasattr(_sys, "_MEIPASS"):
-                candidates.insert(0, os.path.join(_sys._MEIPASS, "sawit-chan.png"))
+                candidates.insert(
+                    0, os.path.join(
+                        _sys._MEIPASS, "sawit-chan.png"))
 
         path = next((c for c in candidates if os.path.exists(c)), None)
         if path is None:
@@ -1279,7 +1459,7 @@ class SawitChanWidget(QLabel):
 
             cell_w, cell_h = 172, 180
             col_start = 32
-            row_starts = [20, 200, 395]  
+            row_starts = [20, 200, 395]
             target_w, target_h = 32, 40
 
             def _process_cell(rx, ry):
@@ -1291,7 +1471,8 @@ class SawitChanWidget(QLabel):
                 bg_mask = (s_val < 35) & (v_val > 60)
                 alpha = np.ones(crop.shape[:2], dtype=np.uint8) * 255
                 alpha[bg_mask] = 0
-                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(alpha)
+                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                    alpha)
                 for i in range(1, num_labels):
                     if stats[i, cv2.CC_STAT_AREA] < 15:
                         alpha[labels == i] = 0
@@ -1299,9 +1480,18 @@ class SawitChanWidget(QLabel):
                 rgba[:, :, 3] = alpha
                 h_crop, w_crop, _ = rgba.shape
                 rgba = np.ascontiguousarray(rgba)
-                qimg = QImage(rgba.data, w_crop, h_crop, w_crop * 4, QImage.Format.Format_ARGB32)
+                qimg = QImage(
+                    rgba.data,
+                    w_crop,
+                    h_crop,
+                    w_crop * 4,
+                    QImage.Format.Format_ARGB32)
                 pixmap = QPixmap.fromImage(qimg.copy())
-                return pixmap.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
+                return pixmap.scaled(
+                    target_w,
+                    target_h,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.FastTransformation)
 
             for row_idx, row_name in [(0, 'idle'), (1, 'walk')]:
                 for col in range(4):
@@ -1339,19 +1529,19 @@ class SawitChanWidget(QLabel):
     def update_position(self):
         if not self.parent():
             return
-            
+
         parent_w = self.parent().width()
         min_x = 330
         max_x = parent_w - self.width() - 10
-        
+
         if max_x <= min_x:
             return
-            
+
         if self.x_pos > max_x:
             self.x_pos = max_x
         if self.x_pos < min_x:
             self.x_pos = min_x
-            
+
         if self.state == 'walk':
             if self.direction == 'right':
                 self.x_pos += self.speed
@@ -1367,7 +1557,7 @@ class SawitChanWidget(QLabel):
                     self.direction = 'right'
                     self.state = 'idle'
                     self.current_frame = 0
-                    
+
         self.move(int(self.x_pos), int(self.y_pos))
 
     def randomize_state(self):
@@ -1424,7 +1614,11 @@ class HeaderBar(QWidget):
             layout.addWidget(b)
 
     def set_theme_icon(self, is_dark: bool, color: str):
-        self.theme_btn.setIcon(Icons.icon("theme_moon" if is_dark else "theme_sun", color, 20))
+        self.theme_btn.setIcon(
+            Icons.icon(
+                "theme_moon" if is_dark else "theme_sun",
+                color,
+                20))
 
     def set_icons(self, color: str):
         self.settings_btn.setIcon(Icons.icon("settings", color, 20))
@@ -1462,7 +1656,8 @@ class MainWindow(QMainWindow):
         self._update_run_enabled()
         self._update_gpu_card()
 
-        # Sawit-chan kembali diparentkan ke MainWindow supaya bebas roam di seluruh layar aplikasi
+        # Sawit-chan kembali diparentkan ke MainWindow supaya bebas roam di
+        # seluruh layar aplikasi
         self.sawit_chan = SawitChanWidget(self)
 
     def _build_ui(self):
@@ -1503,7 +1698,10 @@ class MainWindow(QMainWindow):
         self.act_model_comparison.setCheckable(True)
         self.act_model_comparison.toggled.connect(self.toggle_comparison_page)
 
-        for a in (self.act_open_raster, self.act_load_model, self.act_band_stats):
+        for a in (
+                self.act_open_raster,
+                self.act_load_model,
+                self.act_band_stats):
             self.toolbar.addAction(a)
         self.toolbar.addSeparator()
         for a in (self.act_run, self.act_stop):
@@ -1511,17 +1709,29 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
 
         self.export_btn = QToolButton()
-        self.export_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.export_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.export_btn.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.export_btn.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
         self.export_menu = QMenu(self.export_btn)
-        self.export_menu.addAction("Simpan sebagai PNG...", lambda: self.export_image("png"))
-        self.export_menu.addAction("Simpan sebagai JPEG...", lambda: self.export_image("jpg"))
-        self.export_menu.addAction("Salin Shapefile ke...", self.export_shapefile_copy)
+        self.export_menu.addAction(
+            "Simpan sebagai PNG...",
+            lambda: self.export_image("png"))
+        self.export_menu.addAction(
+            "Simpan sebagai JPEG...",
+            lambda: self.export_image("jpg"))
+        self.export_menu.addAction(
+            "Salin Shapefile ke...",
+            self.export_shapefile_copy)
         self.export_menu.addAction("Export GeoJSON...", self.export_geojson)
         self.export_menu.addAction("Export CSV...", self.export_csv)
         self.export_menu.addSeparator()
-        self.export_menu.addAction("Export Centroid GeoJSON...", self.export_centroid_geojson)
-        self.export_menu.addAction("Export Centroid CSV...", self.export_centroid_csv)
+        self.export_menu.addAction(
+            "Export Centroid GeoJSON...",
+            self.export_centroid_geojson)
+        self.export_menu.addAction(
+            "Export Centroid CSV...",
+            self.export_centroid_csv)
         self.export_btn.setMenu(self.export_menu)
         self.toolbar.addWidget(self.export_btn)
 
@@ -1540,13 +1750,13 @@ class MainWindow(QMainWindow):
         self.sidebar_scroll.setWidgetResizable(True)
         self.sidebar_scroll.setMinimumWidth(320)
         self.sidebar_scroll.setMaximumWidth(380)
-        
+
         self.sidebar = QWidget()
         self.sidebar.setObjectName("sidebar")
         self.sidebar_layout = QVBoxLayout(self.sidebar)
         self.sidebar_layout.setContentsMargins(10, 10, 10, 10)
         self.sidebar_layout.setSpacing(10)
-        
+
         self._build_sidebar()
         self.sidebar_scroll.setWidget(self.sidebar)
 
@@ -1576,8 +1786,9 @@ class MainWindow(QMainWindow):
         self.comparison_page = ComparisonPage()
         _init_tokens = DARK_TOKENS if self._is_dark else LIGHT_TOKENS
         self.comparison_page.apply_theme_icons(
-            _init_tokens["text"], _init_tokens["accent"], _init_tokens["accent_text"]
-        )
+            _init_tokens["text"],
+            _init_tokens["accent"],
+            _init_tokens["accent_text"])
 
         self.content_stack = QStackedWidget()
         self.content_stack.addWidget(self.detection_page)
@@ -1619,10 +1830,16 @@ class MainWindow(QMainWindow):
         self.zoom_label = QLabel("100%")
         self.zoom_label.setMinimumWidth(46)
         self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.canvas.zoomChanged.connect(lambda z: self.zoom_label.setText(f"{int(z * 100)}%"))
+        self.canvas.zoomChanged.connect(
+            lambda z: self.zoom_label.setText(f"{int(z * 100)}%"))
 
-        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_fit, self.btn_actual,
-                  self.btn_reset, self.btn_save_img):
+        for b in (
+            self.btn_zoom_out,
+            self.btn_zoom_in,
+            self.btn_fit,
+            self.btn_actual,
+            self.btn_reset,
+                self.btn_save_img):
             b.setFixedSize(30, 30)
             h.addWidget(b)
         h.addWidget(self.zoom_label)
@@ -1743,7 +1960,8 @@ class MainWindow(QMainWindow):
         self.conf_slider.setRange(1, 99)
         self.conf_slider.setValue(25)
         self.conf_label = QLabel("0.25")
-        self.conf_slider.valueChanged.connect(lambda val: self.conf_label.setText(f"{val/100:.2f}"))
+        self.conf_slider.valueChanged.connect(
+            lambda val: self.conf_label.setText(f"{val / 100:.2f}"))
         conf_row = QHBoxLayout()
         conf_row.addWidget(self.conf_slider)
         conf_row.addWidget(self.conf_label)
@@ -1832,10 +2050,13 @@ class MainWindow(QMainWindow):
         self.act_load_result.setIcon(Icons.icon("folder", text_color, 20))
         self.export_btn.setIcon(Icons.icon("export", text_color, 20))
         self.act_model_comparison.setIcon(
-            Icons.icon("compare", accent if self.act_model_comparison.isChecked() else text_color, 20)
-        )
+            Icons.icon(
+                "compare",
+                accent if self.act_model_comparison.isChecked() else text_color,
+                20))
         if hasattr(self, "comparison_page"):
-            self.comparison_page.apply_theme_icons(text_color, accent, tokens["accent_text"])
+            self.comparison_page.apply_theme_icons(
+                text_color, accent, tokens["accent_text"])
 
         self.btn_zoom_in.setIcon(Icons.icon("zoom_in", text_color, 16))
         self.btn_zoom_out.setIcon(Icons.icon("zoom_out", text_color, 16))
@@ -1856,7 +2077,8 @@ class MainWindow(QMainWindow):
         self.card_tiles.restyle_icon("grid", accent)
 
         if not initial:
-            self.settings.setValue("theme", "dark" if self._is_dark else "light")
+            self.settings.setValue(
+                "theme", "dark" if self._is_dark else "light")
 
     def toggle_theme(self):
         self._is_dark = not self._is_dark
@@ -1893,45 +2115,62 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _load_settings_into_ui(self):
-        self.tile_spin.setValue(self.settings.value("tile_size", 640, type=int))
-        self.overlap_spin.setValue(self.settings.value("overlap", 64, type=int))
-        self.conf_slider.setValue(int(round(self.settings.value("conf", 0.25, type=float) * 100)))
-        self.batch_spin.setValue(self.settings.value("batch_size", 8, type=int))
-        self.output_dir_edit.setText(self.settings.value("output_dir", "", type=str))
+        self.tile_spin.setValue(
+            self.settings.value(
+                "tile_size", 640, type=int))
+        self.overlap_spin.setValue(
+            self.settings.value(
+                "overlap", 64, type=int))
+        self.conf_slider.setValue(
+            int(round(self.settings.value("conf", 0.25, type=float) * 100)))
+        self.batch_spin.setValue(
+            self.settings.value(
+                "batch_size", 8, type=int))
+        self.output_dir_edit.setText(
+            self.settings.value(
+                "output_dir", "", type=str))
 
     def _persist_current_settings(self):
         self.settings.setValue("tile_size", self.tile_spin.value())
         self.settings.setValue("overlap", self.overlap_spin.value())
         self.settings.setValue("conf", self.conf_slider.value() / 100.0)
         self.settings.setValue("batch_size", self.batch_spin.value())
-        self.settings.setValue("output_dir", self.output_dir_edit.text().strip())
+        self.settings.setValue(
+            "output_dir",
+            self.output_dir_edit.text().strip())
 
     def pick_output_dir(self):
-        start_dir = self.output_dir_edit.text().strip() or (str(Path(self.raster_path).parent) if self.raster_path else str(Path.home()))
-        out_dir = QFileDialog.getExistingDirectory(self, "Pilih folder output", start_dir)
+        start_dir = self.output_dir_edit.text().strip() or (
+            str(Path(self.raster_path).parent) if self.raster_path else str(Path.home()))
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "Pilih folder output", start_dir)
         if out_dir:
             self.output_dir_edit.setText(out_dir)
             self.settings.setValue("output_dir", out_dir)
 
     def open_output_folder(self):
         out_dir = self.output_dir_edit.text().strip()
-        target = out_dir if out_dir else (str(Path(self.raster_path).parent) if self.raster_path else str(Path.home()))
+        target = out_dir if out_dir else (
+            str(Path(self.raster_path).parent) if self.raster_path else str(Path.home()))
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
     def pick_model(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Pilih model YOLO (.pt)", "", "PyTorch Model (*.pt)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Pilih model YOLO (.pt)", "", "PyTorch Model (*.pt)")
         if path:
             self.model_path = path
             self.model_edit.setText(path)
             try:
                 size_mb = Path(path).stat().st_size / (1024 * 1024)
-                self.model_info_label.setText(f"{Path(path).name} ({size_mb:.1f} MB)")
+                self.model_info_label.setText(
+                    f"{Path(path).name} ({size_mb:.1f} MB)")
             except OSError:
                 self.model_info_label.setText(Path(path).name)
             self._update_run_enabled()
 
     def pick_stats(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Pilih band_stats.json", "", "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Pilih band_stats.json", "", "JSON (*.json)")
         if path:
             self.stats_path = path
             self.stats_edit.setText(path)
@@ -1944,7 +2183,8 @@ class MainWindow(QMainWindow):
             self._update_run_enabled()
 
     def pick_raster(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Buka raster", "", "Raster Files (*.tif *.tiff *.png *.jpg *.jpeg)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Buka raster", "", "Raster Files (*.tif *.tiff *.png *.jpg *.jpeg)")
         if path:
             self._set_raster(path)
 
@@ -1954,7 +2194,8 @@ class MainWindow(QMainWindow):
         self._update_run_enabled()
         try:
             with rasterio.open(path) as src:
-                self.raster_info_label.setText(f"{src.width} x {src.height} px")
+                self.raster_info_label.setText(
+                    f"{src.width} x {src.height} px")
         except Exception as e:
             self.raster_info_label.setText(f"Error: {e}")
             return
@@ -1982,11 +2223,13 @@ class MainWindow(QMainWindow):
         self._apply_theme()
 
     def load_existing_result(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Pilih hasil (.shp)", "", "Shapefile (*.shp)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Pilih hasil (.shp)", "", "Shapefile (*.shp)")
         if not path:
             return
         try:
-            boxes, scores, classes, class_names = load_detection_from_shapefile(Path(path))
+            boxes, scores, classes, class_names = load_detection_from_shapefile(
+                Path(path))
             result = type("LoadedResult", (), {})()
             result.boxes = boxes
             result.scores = scores
@@ -1995,7 +2238,14 @@ class MainWindow(QMainWindow):
             result.shp_path = Path(path)
             self.last_result = result
             if self.raster_path:
-                preview = build_preview_bgr(Path(self.raster_path), boxes, scores, 1.0, 99.0, classes=classes)
+                preview = build_preview_bgr(
+                    Path(
+                        self.raster_path),
+                    boxes,
+                    scores,
+                    1.0,
+                    99.0,
+                    classes=classes)
                 self.canvas.show_bgr_image(preview)
                 self.canvas.show_result(result, class_names=class_names)
             self.card_detections.set_value(str(len(boxes)))
@@ -2011,7 +2261,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.stage_stepper.reset()
         self.log_console.clear()
-        
+
         conf = self.conf_slider.value() / 100.0
         tile_size = self.tile_spin.value()
         overlap = self.overlap_spin.value()
@@ -2029,7 +2279,8 @@ class MainWindow(QMainWindow):
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.log.connect(self.log_console.log)
-        self.worker.progress.connect(lambda cur, tot: self.progress_bar.setValue(int(cur/tot*100) if tot else 0))
+        self.worker.progress.connect(lambda cur, tot: self.progress_bar.setValue(
+            int(cur / tot * 100) if tot else 0))
         self.worker.finished.connect(self.on_finished)
         self.worker.failed.connect(self.on_failed)
         self.worker.finished.connect(self.thread.quit)
@@ -2052,7 +2303,9 @@ class MainWindow(QMainWindow):
         self.card_detections.set_value(str(len(result.boxes)))
         if result.preview_bgr is not None:
             self.canvas.show_bgr_image(result.preview_bgr)
-            self.canvas.show_result(result, getattr(result, "class_names", None))
+            self.canvas.show_result(
+                result, getattr(
+                    result, "class_names", None))
 
     def on_failed(self, error_msg: str):
         self.run_btn.setEnabled(True)
@@ -2086,24 +2339,256 @@ class MainWindow(QMainWindow):
     def export_image(self, fmt: str):
         if not self.canvas.has_image():
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Simpan gambar", f"hasil.{fmt}", f"Image (*.{fmt})")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Simpan gambar", f"hasil.{fmt}", f"Image (*.{fmt})")
         if path:
             self.canvas.save_current_image(path)
 
     def export_shapefile_copy(self):
-        pass
+        if not self.last_result or not getattr(self.last_result, "shp_path", None):
+            QMessageBox.warning(self, "Peringatan", "Belum ada hasil shapefile untuk disalin.")
+            return
+        
+        src_shp = Path(self.last_result.shp_path)
+        if not src_shp.is_file():
+            QMessageBox.warning(self, "Peringatan", f"File Shapefile asal tidak ditemukan: {src_shp}")
+            return
+            
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salin Shapefile ke", src_shp.name, "Shapefile (*.shp)"
+        )
+        if not path:
+            return
+            
+        try:
+            dest_path = Path(path)
+            dest_dir = dest_path.parent
+            dest_stem = dest_path.stem
+            
+            src_dir = src_shp.parent
+            src_stem = src_shp.stem
+            
+            # Copy all related shapefile components
+            copied = []
+            for ext in (".shp", ".shx", ".dbf", ".prj"):
+                s_file = src_dir / f"{src_stem}{ext}"
+                d_file = dest_dir / f"{dest_stem}{ext}"
+                if s_file.is_file():
+                    shutil.copy2(s_file, d_file)
+                    copied.append(ext)
+                    
+            self.statusBar().showMessage(f"Berhasil menyalin Shapefile ({', '.join(copied)}) ke {dest_path}")
+            QMessageBox.information(self, "Sukses", f"Shapefile berhasil disalin ke:\n{dest_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal menyalin Shapefile:\n{e}")
 
     def export_geojson(self):
-        pass
+        if not self.last_result or len(self.last_result.boxes) == 0:
+            QMessageBox.warning(self, "Peringatan", "Belum ada hasil deteksi untuk diekspor.")
+            return
+        
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Ekspor GeoJSON", "deteksi.geojson", "GeoJSON (*.geojson)"
+        )
+        if not path:
+            return
+            
+        try:
+            with rasterio.open(self.raster_path) as src:
+                raster_transform = src.transform
+                epsg = src.crs.to_epsg() if src.crs else None
+
+            features = []
+            class_names = getattr(self.last_result, "class_names", None)
+            for i, (box, score, cls) in enumerate(zip(self.last_result.boxes, self.last_result.scores, self.last_result.classes), start=1):
+                x1_px, y1_px, x2_px, y2_px = box
+                x1_geo, y1_geo = rasterio.transform.xy(raster_transform, y1_px, x1_px)
+                x2_geo, y2_geo = rasterio.transform.xy(raster_transform, y2_px, x2_px)
+                
+                poly_coords = [[
+                    [x1_geo, y1_geo],
+                    [x2_geo, y1_geo],
+                    [x2_geo, y2_geo],
+                    [x1_geo, y2_geo],
+                    [x1_geo, y1_geo]
+                ]]
+                
+                class_name = resolve_class_name(int(cls), class_names)
+                
+                feat = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": poly_coords
+                    },
+                    "properties": {
+                        "id": i,
+                        "kelas": class_name,
+                        "confidence": round(float(score), 4),
+                        "x1_px": round(float(x1_px), 1),
+                        "y1_px": round(float(y1_px), 1),
+                        "x2_px": round(float(x2_px), 1),
+                        "y2_px": round(float(y2_px), 1)
+                    }
+                }
+                features.append(feat)
+
+            fc = {
+                "type": "FeatureCollection",
+                "features": features
+            }
+            if epsg:
+                fc["crs"] = {
+                    "type": "name",
+                    "properties": {"name": f"urn:ogc:def:crs:EPSG::{epsg}"}
+                }
+
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(fc, f, indent=2)
+                
+            self.statusBar().showMessage(f"Berhasil mengekspor GeoJSON ke {path}")
+            QMessageBox.information(self, "Sukses", f"GeoJSON berhasil disimpan di:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal mengekspor GeoJSON:\n{e}")
 
     def export_csv(self):
-        pass
+        if not self.last_result or len(self.last_result.boxes) == 0:
+            QMessageBox.warning(self, "Peringatan", "Belum ada hasil deteksi untuk diekspor.")
+            return
+        
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Ekspor CSV", "deteksi.csv", "CSV (*.csv)"
+        )
+        if not path:
+            return
+            
+        try:
+            with rasterio.open(self.raster_path) as src:
+                raster_transform = src.transform
+
+            class_names = getattr(self.last_result, "class_names", None)
+            
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["id", "kelas", "confidence", "x1_px", "y1_px", "x2_px", "y2_px", "x1_geo", "y1_geo", "x2_geo", "y2_geo"])
+                
+                for i, (box, score, cls) in enumerate(zip(self.last_result.boxes, self.last_result.scores, self.last_result.classes), start=1):
+                    x1_px, y1_px, x2_px, y2_px = box
+                    x1_geo, y1_geo = rasterio.transform.xy(raster_transform, y1_px, x1_px)
+                    x2_geo, y2_geo = rasterio.transform.xy(raster_transform, y2_px, x2_px)
+                    class_name = resolve_class_name(int(cls), class_names)
+                    
+                    writer.writerow([
+                        i, class_name, round(float(score), 4),
+                        round(float(x1_px), 1), round(float(y1_px), 1),
+                        round(float(x2_px), 1), round(float(y2_px), 1),
+                        round(x1_geo, 6), round(y1_geo, 6),
+                        round(x2_geo, 6), round(y2_geo, 6)
+                    ])
+                    
+            self.statusBar().showMessage(f"Berhasil mengekspor CSV ke {path}")
+            QMessageBox.information(self, "Sukses", f"CSV berhasil disimpan di:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal mengekspor CSV:\n{e}")
 
     def export_centroid_geojson(self):
-        pass
+        if not self.last_result or len(self.last_result.boxes) == 0:
+            QMessageBox.warning(self, "Peringatan", "Belum ada hasil deteksi untuk diekspor.")
+            return
+        
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Ekspor Centroid GeoJSON", "centroid_deteksi.geojson", "GeoJSON (*.geojson)"
+        )
+        if not path:
+            return
+            
+        try:
+            with rasterio.open(self.raster_path) as src:
+                raster_transform = src.transform
+                epsg = src.crs.to_epsg() if src.crs else None
+
+            features = []
+            class_names = getattr(self.last_result, "class_names", None)
+            for i, (box, score, cls) in enumerate(zip(self.last_result.boxes, self.last_result.scores, self.last_result.classes), start=1):
+                x1_px, y1_px, x2_px, y2_px = box
+                cx_px = (x1_px + x2_px) / 2.0
+                cy_px = (y1_px + y2_px) / 2.0
+                cx_geo, cy_geo = rasterio.transform.xy(raster_transform, cy_px, cx_px)
+                
+                class_name = resolve_class_name(int(cls), class_names)
+                
+                feat = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [cx_geo, cy_geo]
+                    },
+                    "properties": {
+                        "id": i,
+                        "kelas": class_name,
+                        "confidence": round(float(score), 4),
+                        "cx_px": round(float(cx_px), 1),
+                        "cy_px": round(float(cy_px), 1)
+                    }
+                }
+                features.append(feat)
+
+            fc = {
+                "type": "FeatureCollection",
+                "features": features
+            }
+            if epsg:
+                fc["crs"] = {
+                    "type": "name",
+                    "properties": {"name": f"urn:ogc:def:crs:EPSG::{epsg}"}
+                }
+
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(fc, f, indent=2)
+                
+            self.statusBar().showMessage(f"Berhasil mengekspor Centroid GeoJSON ke {path}")
+            QMessageBox.information(self, "Sukses", f"Centroid GeoJSON berhasil disimpan di:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal mengekspor Centroid GeoJSON:\n{e}")
 
     def export_centroid_csv(self):
-        pass
+        if not self.last_result or len(self.last_result.boxes) == 0:
+            QMessageBox.warning(self, "Peringatan", "Belum ada hasil deteksi untuk diekspor.")
+            return
+        
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Ekspor Centroid CSV", "centroid_deteksi.csv", "CSV (*.csv)"
+        )
+        if not path:
+            return
+            
+        try:
+            with rasterio.open(self.raster_path) as src:
+                raster_transform = src.transform
+
+            class_names = getattr(self.last_result, "class_names", None)
+            
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["id", "kelas", "confidence", "cx_px", "cy_px", "cx_geo", "cy_geo"])
+                
+                for i, (box, score, cls) in enumerate(zip(self.last_result.boxes, self.last_result.scores, self.last_result.classes), start=1):
+                    x1_px, y1_px, x2_px, y2_px = box
+                    cx_px = (x1_px + x2_px) / 2.0
+                    cy_px = (y1_px + y2_px) / 2.0
+                    cx_geo, cy_geo = rasterio.transform.xy(raster_transform, cy_px, cx_px)
+                    class_name = resolve_class_name(int(cls), class_names)
+                    
+                    writer.writerow([
+                        i, class_name, round(float(score), 4),
+                        round(float(cx_px), 1), round(float(cy_px), 1),
+                        round(cx_geo, 6), round(cy_geo, 6)
+                    ])
+                    
+            self.statusBar().showMessage(f"Berhasil mengekspor Centroid CSV ke {path}")
+            QMessageBox.information(self, "Sukses", f"Centroid CSV berhasil disimpan di:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Gagal mengekspor Centroid CSV:\n{e}")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
