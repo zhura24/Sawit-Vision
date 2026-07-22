@@ -41,7 +41,8 @@ from PyQt6.QtWidgets import (
 
 from inference_core import (
     CancelledError, InferenceEngine, build_preview_bgr, is_multiref_schema,
-    load_band_stats, load_detection_from_shapefile, resolve_class_name
+    load_band_stats, load_detection_from_shapefile, resolve_class_name,
+    summarize_class_counts,
 )
 from comparison_widget import ComparisonPage
 
@@ -1865,6 +1866,84 @@ class MainWindow(QMainWindow):
         for c in (self.card_gpu, self.card_detections, self.card_confidence,
                   self.card_time, self.card_tiles):
             h.addWidget(c, 1)
+
+        # Sebelumnya signal `clicked` di DashboardCard sudah emit dengan benar
+        # (cursor juga sudah pointing-hand), tapi TIDAK ADA yang connect ke
+        # signal itu -- jadi klik kartu tidak menampilkan apapun walau README
+        # sudah mengklaim "klik kartu untuk membuka panel rincian per kelas".
+        self.card_gpu.clicked.connect(lambda: self._show_card_detail("gpu"))
+        self.card_detections.clicked.connect(lambda: self._show_card_detail("detections"))
+        self.card_confidence.clicked.connect(lambda: self._show_card_detail("confidence"))
+        self.card_time.clicked.connect(lambda: self._show_card_detail("time"))
+        self.card_tiles.clicked.connect(lambda: self._show_card_detail("tiles"))
+
+    def _show_card_detail(self, card_key: str):
+        """Panel rincian saat kartu dashboard diklik. Untuk kartu Deteksi &
+        Confidence, breakdown-nya PER KELAS -- diambil dari
+        result.class_counts / result.class_names yang sudah dihitung di
+        InferenceEngine.run() (lihat inference_core.summarize_class_counts),
+        supaya model 2 kelas atau lebih langsung kelihatan rinciannya di sini
+        tanpa perlu buka shapefile/GeoJSON secara manual."""
+        result = getattr(self, "last_result", None)
+        titles = {
+            "gpu": "Detail GPU", "detections": "Detail Jumlah Deteksi",
+            "confidence": "Detail Confidence", "time": "Detail Waktu Inference",
+            "tiles": "Detail Jumlah Tile",
+        }
+        details = []
+
+        if card_key == "gpu":
+            force_cpu = bool(self.settings.value("force_cpu", False, type=bool))
+            cuda_ok = torch.cuda.is_available()
+            details = [
+                ("Status", "CPU (dipaksa dari Pengaturan)" if force_cpu
+                 else ("GPU aktif" if cuda_ok else "CPU (GPU tidak terdeteksi)")),
+                ("CUDA Terdeteksi", "Ya" if cuda_ok else "Tidak"),
+                ("Nama Perangkat", torch.cuda.get_device_name(0) if cuda_ok else "-"),
+            ]
+
+        elif card_key == "detections":
+            if result is None or len(result.boxes) == 0:
+                details = [("Total Deteksi", 0)]
+            else:
+                details = [("Total Deteksi", len(result.boxes))]
+                counts = getattr(result, "class_counts", None) or \
+                    summarize_class_counts(result.classes, getattr(result, "class_names", None))
+                for name, count in counts:
+                    details.append((f"Kelas \"{name}\"", count))
+
+        elif card_key == "confidence":
+            if result is None or len(result.scores) == 0:
+                details = [("Confidence Rata-rata", "-")]
+            else:
+                details = [("Rata-rata (semua kelas)", f"{float(np.mean(result.scores)) * 100:.1f}%")]
+                classes_arr = np.asarray(result.classes, dtype=int).reshape(-1)
+                class_names = getattr(result, "class_names", None)
+                for cid in sorted(set(classes_arr.tolist())):
+                    mask = classes_arr == cid
+                    name = resolve_class_name(cid, class_names)
+                    mean_conf = float(np.mean(result.scores[mask])) * 100
+                    details.append((f"Rata-rata \"{name}\"", f"{mean_conf:.1f}% ({int(mask.sum())} objek)"))
+
+        elif card_key == "time":
+            details = [
+                ("Waktu Inference", self.card_time.value_label.text()),
+                ("Total Deteksi", self.card_detections.value_label.text()),
+                ("Jumlah Tile", self.card_tiles.value_label.text()),
+            ]
+
+        elif card_key == "tiles":
+            details = [
+                ("Jumlah Tile Diproses", self.card_tiles.value_label.text()),
+                ("Tile Size", self.tile_spin.value()),
+                ("Overlap", self.overlap_spin.value()),
+                ("Batch Size", self.batch_spin.value()),
+            ]
+
+        if not details or (result is None and card_key not in ("gpu", "tiles")):
+            details = details or [("Info", "Belum ada data. Jalankan deteksi terlebih dahulu.")]
+
+        DetectionDetailsDialog(self, titles.get(card_key, "Detail"), details).exec()
 
     def _build_sidebar(self):
         card_recent = QFrame()

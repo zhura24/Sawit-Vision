@@ -211,22 +211,17 @@ def read_points_any_full(path):
     raise ValueError(f"Format file tidak didukung: {ext} (pakai .shp / .gpkg / .geojson)")
 
 
-def match_greedy(manual_xy: np.ndarray, infer_xy: np.ndarray, threshold: float):
-    """
-    Greedy nearest-neighbor, one-to-one matching.
-    Setiap titik manual maksimal dipasangkan 1x (mencegah 1 manual dihitung TP berkali-kali
-    kalau ada beberapa deteksi tumpang tindih di sekitarnya).
-
-    Return:
-      matches -> list of (infer_idx, manual_idx, distance)
-      fp_idx  -> list infer_idx yang TIDAK dapat pasangan (False Positive)
-      fn_idx  -> list manual_idx yang TIDAK dapat pasangan (False Negative)
-    """
+def _match_greedy_single_group(manual_xy, infer_xy, threshold, manual_ids, infer_ids):
+    """Greedy nearest-neighbor 1-to-1 untuk SATU kelompok (dalam 1 kelas, atau
+    seluruh data kalau kelas tidak dipakai). `manual_ids`/`infer_ids` = index
+    ASLI (global, sebelum di-subset per kelas) yang sejajar posisi dengan
+    manual_xy/infer_xy -- dipetakan balik supaya hasil match/fp/fn tetap
+    memakai index yang benar terhadap data lengkap."""
     n_manual, n_infer = len(manual_xy), len(infer_xy)
     if n_infer == 0:
-        return [], [], list(range(n_manual))
+        return [], [], list(manual_ids)
     if n_manual == 0:
-        return [], list(range(n_infer)), []
+        return [], list(infer_ids), []
 
     tree = cKDTree(manual_xy)
     dist, idx = tree.query(infer_xy, k=1)
@@ -240,10 +235,63 @@ def match_greedy(manual_xy: np.ndarray, infer_xy: np.ndarray, threshold: float):
         m = int(idx[i])
         if d <= threshold and m not in used_manual:
             used_manual.add(m)
-            matches.append((int(i), m, d))
+            matches.append((infer_ids[i], manual_ids[m], d))
         else:
-            fp.append(int(i))
-    fn = [m for m in range(n_manual) if m not in used_manual]
+            fp.append(infer_ids[i])
+    fn = [manual_ids[m] for m in range(n_manual) if m not in used_manual]
+    return matches, fp, fn
+
+
+def match_greedy(manual_xy: np.ndarray, infer_xy: np.ndarray, threshold: float,
+                  manual_classes=None, infer_classes=None):
+    """
+    Greedy nearest-neighbor, one-to-one matching.
+    Setiap titik manual maksimal dipasangkan 1x (mencegah 1 manual dihitung TP berkali-kali
+    kalau ada beberapa deteksi tumpang tindih di sekitarnya).
+
+    `manual_classes`/`infer_classes`: list label kelas per titik (opsional).
+    Kalau KEDUANYA diberikan, pencocokan HANYA dilakukan antar titik kelas
+    yang SAMA -- deteksi yang posisinya pas tapi kelasnya salah TIDAK akan
+    dihitung TP lagi (sebelumnya matching ini murni jarak, jadi model 2 kelas
+    yang salah tebak kelas tapi posisinya benar tetap dihitung benar).
+    Titik yang kelasnya sama sekali tidak ada pasangannya di sisi lain
+    otomatis FP/FN tanpa perlu dicek jaraknya. Kalau salah satu/keduanya
+    None, fallback ke matching spasial murni (perilaku lama, backward
+    compatible untuk model 1 kelas / GT tanpa atribut kelas).
+
+    Return:
+      matches -> list of (infer_idx, manual_idx, distance)
+      fp_idx  -> list infer_idx yang TIDAK dapat pasangan (False Positive)
+      fn_idx  -> list manual_idx yang TIDAK dapat pasangan (False Negative)
+    """
+    n_manual, n_infer = len(manual_xy), len(infer_xy)
+    if n_infer == 0:
+        return [], [], list(range(n_manual))
+    if n_manual == 0:
+        return [], list(range(n_infer)), []
+
+    if manual_classes is None or infer_classes is None:
+        return _match_greedy_single_group(
+            manual_xy, infer_xy, threshold, list(range(n_manual)), list(range(n_infer)))
+
+    all_classes = {c for c in manual_classes if c is not None} | \
+        {c for c in infer_classes if c is not None}
+
+    matches, fp, fn = [], [], []
+    for c in all_classes:
+        m_ids = [i for i in range(n_manual) if manual_classes[i] == c]
+        i_ids = [i for i in range(n_infer) if infer_classes[i] == c]
+        if not i_ids:
+            fn.extend(m_ids)
+            continue
+        if not m_ids:
+            fp.extend(i_ids)
+            continue
+        sub_matches, sub_fp, sub_fn = _match_greedy_single_group(
+            manual_xy[m_ids], infer_xy[i_ids], threshold, m_ids, i_ids)
+        matches.extend(sub_matches)
+        fp.extend(sub_fp)
+        fn.extend(sub_fn)
     return matches, fp, fn
 
 
@@ -268,7 +316,30 @@ def _extract_confidence(attr):
     return None
 
 
-def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs):
+def _extract_class_label(attr):
+    """Cari label kelas dari dict atribut. Coba beberapa nama field umum
+    (shapefile Sawit Vision pakai 'kelas', tapi file GT manual bisa saja
+    pakai nama lain) supaya robust tanpa perlu skema baku.
+
+    Return string ternormalisasi (lower+strip) atau None kalau field kelas
+    tidak ditemukan sama sekali -- None berarti "info kelas tidak tersedia",
+    BUKAN "kelas kosong", supaya caller tahu harus fallback ke matching
+    spasial murni (backward compatible untuk model 1 kelas / GT tanpa
+    atribut kelas).
+    """
+    if not attr:
+        return None
+    for key in ("kelas", "class", "class_name", "kategori", "jenis", "label"):
+        if key in attr:
+            v = attr[key]
+            if v is None or v == "":
+                continue
+            return str(v).strip().lower()
+    return None
+
+
+def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs,
+                       manual_classes=None, infer_classes=None):
     """Containment-based matching dengan confidence tiebreaker.
 
     Untuk setiap titik GT (manual), cari SEMUA bounding box deteksi yang
@@ -277,6 +348,14 @@ def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs):
       1. Confidence tertinggi (primary tiebreaker)
       2. Jarak centroid box ke GT terkecil (secondary tiebreaker)
     Aturan 1-to-1: setiap box hanya boleh dipakai untuk 1 GT.
+
+    `manual_classes`/`infer_classes`: list label kelas per titik (opsional).
+    Kalau KEDUANYA diberikan, box yang secara SPASIAL mengandung titik GT
+    tapi KELAS PREDIKSINYA BEDA dari kelas GT tidak dianggap kandidat valid
+    sama sekali -- jadi tidak lagi bisa "menang" jadi TP hanya karena
+    posisinya pas (sebelumnya matching ini murni containment+confidence,
+    kelas prediksi tidak pernah dicek). Kalau salah satu/keduanya None,
+    fallback ke containment murni (perilaku lama, backward compatible).
 
     Kenapa aturan 1-to-1: mencegah model "curang" -- 1 box gede yang
     mencakup 5 pohon tidak boleh menghasilkan 5 TP. Kalau box sudah
@@ -287,15 +366,18 @@ def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs):
                  distance di sini = jarak centroid box ke GT (untuk info,
                  bukan syarat matching).
       fp_idx  -> list infer_idx yang TIDAK dapat pasangan (deteksi yang
-                 tidak mengandung GT manapun, atau kalah tiebreaker).
+                 tidak mengandung GT manapun, atau kalah tiebreaker, atau
+                 kelasnya tidak cocok dengan GT manapun yang ditampungnya).
       fn_idx  -> list manual_idx yang TIDAK dapat pasangan (GT yang tidak
-                 masuk ke box manapun).
+                 masuk ke box manapun, atau hanya masuk ke box berkelas beda).
     """
     n_manual, n_infer = len(manual_xy), len(infer_xy)
     if n_infer == 0:
         return [], [], list(range(n_manual))
     if n_manual == 0:
         return [], list(range(n_infer)), []
+
+    use_class = manual_classes is not None and infer_classes is not None
 
     # Ekstrak confidence tiap deteksi untuk tiebreaker. Kalau None,
     # anggap 0.0 (bakal kalah tiebreaker vs yang punya confidence).
@@ -317,12 +399,15 @@ def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs):
 
     # Iterasi tiap GT
     for m_idx, (gx, gy) in enumerate(manual_xy):
+        gt_class = manual_classes[m_idx] if use_class else None
         candidates = []
         for i_idx, bbox in enumerate(infer_bboxes):
             if i_idx in used_infer:
                 continue  # sudah dipakai GT lain
             if bbox is None:
                 continue  # box POINT, gak bisa untuk containment
+            if use_class and infer_classes[i_idx] != gt_class:
+                continue  # box menampung titik GT tapi KELAS BEDA -- bukan match valid
             xmin, ymin, xmax, ymax = bbox
             if xmin <= gx <= xmax and ymin <= gy <= ymax:
                 cx, cy = infer_xy[i_idx]
@@ -346,7 +431,8 @@ def match_containment(manual_xy, infer_xy, infer_bboxes, infer_attrs):
     return matches, fp, fn
 
 
-def evaluate_model(manual_xy, infer_xy, threshold, infer_bboxes=None, infer_attrs=None):
+def evaluate_model(manual_xy, infer_xy, threshold, infer_bboxes=None, infer_attrs=None,
+                    manual_attrs=None):
     """Hitung metrik lengkap untuk satu model.
 
     MODE MATCHING:
@@ -362,18 +448,42 @@ def evaluate_model(manual_xy, infer_xy, threshold, infer_bboxes=None, infer_attr
     manggil `evaluate_model(manual_xy, infer_xy, threshold)` tanpa bbox,
     tetap jalan seperti biasa. Kalau caller baru pass bbox, otomatis
     dapat containment matching yang lebih tepat.
+
+    CLASS-AWARE MATCHING: kalau `manual_attrs` DAN `infer_attrs` sama-sama
+    diberikan dan sama-sama punya field kelas yang terbaca (lihat
+    _extract_class_label -- coba "kelas"/"class"/dst), matching hanya
+    dianggap valid antar titik BERKELAS SAMA. Deteksi yang posisinya pas
+    tapi salah tebak kelas tidak lagi dihitung TP. Ini otomatis nonaktif
+    (fallback ke matching spasial murni, perilaku lama) kalau salah satu
+    sisi tidak punya info kelas sama sekali -- jadi tetap backward
+    compatible untuk model 1 kelas / GT tanpa atribut kelas.
     """
+    manual_classes = [_extract_class_label(a) for a in manual_attrs] if manual_attrs else None
+    infer_classes = [_extract_class_label(a) for a in infer_attrs] if infer_attrs else None
+    class_aware = bool(
+        manual_classes is not None and infer_classes is not None and
+        any(c is not None for c in manual_classes) and
+        any(c is not None for c in infer_classes)
+    )
+    if not class_aware:
+        manual_classes = None
+        infer_classes = None
+
     # Auto-detect mode
     has_bbox = (infer_bboxes is not None and
                 any(b is not None for b in infer_bboxes))
 
     if has_bbox:
         matches, fp, fn = match_containment(
-            manual_xy, infer_xy, infer_bboxes, infer_attrs or [{}] * len(infer_xy)
+            manual_xy, infer_xy, infer_bboxes, infer_attrs or [{}] * len(infer_xy),
+            manual_classes=manual_classes, infer_classes=infer_classes,
         )
         match_mode = "containment"
     else:
-        matches, fp, fn = match_greedy(manual_xy, infer_xy, threshold)
+        matches, fp, fn = match_greedy(
+            manual_xy, infer_xy, threshold,
+            manual_classes=manual_classes, infer_classes=infer_classes,
+        )
         match_mode = "distance"
 
     tp = len(matches)
@@ -393,6 +503,7 @@ def evaluate_model(manual_xy, infer_xy, threshold, infer_bboxes=None, infer_attr
         "rmse_dist": float(np.sqrt((dists ** 2).mean())) if dists.size else 0.0,
         "max_dist": float(dists.max()) if dists.size else 0.0,
         "match_mode": match_mode,  # 'containment' atau 'distance' -- info buat log
+        "class_aware": class_aware,  # True kalau kelas ikut dicek saat matching
     }
     return metrics, matches, fp, fn
 
@@ -709,7 +820,7 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
 
     base_headers = ["Model", "N Manual", "N Deteksi", "TP", "FP", "FN",
                     "Precision", "Recall", "F1", "Mean Dist (m)", "Median Dist (m)",
-                    "RMSE Dist (m)", "Max Dist (m)"]
+                    "RMSE Dist (m)", "Max Dist (m)", "Mode Matching", "Kelas Diperhitungkan?"]
 
     # Kumpulkan kolom atribut numerik (union dari semua model) supaya bisa dirata-ratakan
     # di sheet Ringkasan berdasarkan pasangan TP yang sudah di-join dengan atribut manual.
@@ -737,6 +848,8 @@ def export_comparison_excel(output_path, manual_xy, model_results, threshold, ma
             round(m["precision"], 4), round(m["recall"], 4), round(m["f1"], 4),
             round(m["mean_dist"], 4), round(m["median_dist"], 4),
             round(m["rmse_dist"], 4), round(m["max_dist"], 4),
+            "Containment" if m.get("match_mode") == "containment" else "Jarak (Distance)",
+            "Ya" if m.get("class_aware") else "Tidak (posisi saja)",
         ]
         # Rata-rata atribut infer dihitung dari SEMUA deteksi model ini (bukan cuma TP),
         # supaya tetap terisi walau jumlah TP sedikit/nol.

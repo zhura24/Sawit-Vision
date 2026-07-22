@@ -302,7 +302,8 @@ class ComparisonPage(QWidget):
                 infer_xy, infer_attrs, infer_bboxes = model_comparison.read_points_any_full(path)
 
                 metrics, matches, fp, fn = model_comparison.evaluate_model(
-                    manual_xy, infer_xy, threshold, infer_bboxes, infer_attrs
+                    manual_xy, infer_xy, threshold, infer_bboxes, infer_attrs,
+                    manual_attrs=manual_attrs,
                 )
 
                 self.comparison_results.append({
@@ -329,6 +330,10 @@ class ComparisonPage(QWidget):
 
                 self.log(f"  -> TP: {metrics['tp']}, FP: {metrics['fp']}, FN: {metrics['fn']}")
                 self.log(f"  -> Precision: {metrics['precision']:.1%}, Recall: {metrics['recall']:.1%}, F1: {metrics['f1']:.1%}")
+                if metrics.get("class_aware"):
+                    self.log("  -> Matching memperhitungkan KELAS (GT & hasil deteksi sama-sama punya atribut kelas).")
+                else:
+                    self.log("  -> Matching hanya berdasarkan posisi (info kelas tidak lengkap di GT/hasil deteksi).")
 
             self.btn_export.setEnabled(True)
             self.log("Semua perbandingan model selesai dengan sukses!")

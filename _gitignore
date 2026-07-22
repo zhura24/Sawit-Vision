@@ -1,0 +1,29 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# PyInstaller build artefak
+build/
+dist/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Model & raster data besar (upload manual / lewat Release, bukan git)
+*.pt
+*.tif
+*.tiff
+
+# OS/editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+Installer/
+*.exe
+
+*.iss
