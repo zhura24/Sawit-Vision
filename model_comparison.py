@@ -1202,10 +1202,19 @@ def export_comparison_points(output_dir, manual_xy, model_results, manual_path=N
             candidate = f"{base_name}_{n}"
         used_names.add(candidate)
 
-        def _write_set(suffix, subset_rows):
-            shp_path = os.path.join(output_dir, f"{candidate}_{suffix}.shp")
-            geojson_path = os.path.join(output_dir, f"{candidate}_{suffix}.geojson")
-            csv_path = os.path.join(output_dir, f"{candidate}_{suffix}.csv")
+        # Setiap model dapat sub-folder sendiri, supaya kalau bandingin
+        # beberapa model (mis. Multispectral vs RGB) file-nya tidak
+        # numpuk campur jadi satu. Di dalam sub-folder model, TP/FP/FN/
+        # Gabungan masing-masing juga punya sub-foldernya sendiri.
+        model_dir = os.path.join(output_dir, candidate)
+        os.makedirs(model_dir, exist_ok=True)
+
+        def _write_set(subdir_name, suffix, subset_rows):
+            target_dir = os.path.join(model_dir, subdir_name)
+            os.makedirs(target_dir, exist_ok=True)
+            shp_path = os.path.join(target_dir, f"{candidate}_{suffix}.shp")
+            geojson_path = os.path.join(target_dir, f"{candidate}_{suffix}.geojson")
+            csv_path = os.path.join(target_dir, f"{candidate}_{suffix}.csv")
             _write_points_shapefile(shp_path, subset_rows, infer_keys, manual_keys)
             _write_points_geojson(geojson_path, subset_rows, infer_keys, manual_keys,
                                    epsg=output_epsg)
@@ -1216,10 +1225,13 @@ def export_comparison_points(output_dir, manual_xy, model_results, manual_path=N
         by_status = {}
         for status in ("TP", "FP", "FN"):
             subset = [row for row in rows if row["status"] == status]
-            by_status[status] = _write_set(status, subset) if subset else None
+            by_status[status] = _write_set(status, status, subset) if subset else None
 
-        combined = _write_set("hasil", rows)
+        combined = _write_set("Gabungan", "hasil", rows)
 
-        outputs.append({"name": r["name"], "combined": combined, "by_status": by_status})
+        outputs.append({
+            "name": r["name"], "folder": model_dir,
+            "combined": combined, "by_status": by_status,
+        })
 
     return outputs

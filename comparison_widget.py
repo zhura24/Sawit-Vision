@@ -502,23 +502,25 @@ class ComparisonPage(QWidget):
                 manual_path=self.manual_path, manual_attrs=getattr(self, "manual_attrs", None),
             )
             for po in point_outputs:
-                self.log_box.appendPlainText(f"  -> {po['name']}:")
+                self.log_box.appendPlainText(f"  -> {po['name']}/ ({os.path.basename(po['folder'])})")
                 for status in ("TP", "FP", "FN"):
                     fileset = po["by_status"][status]
                     if fileset:
-                        self.log_box.appendPlainText(f"       {status}: {os.path.basename(fileset['shp'])}")
+                        self.log_box.appendPlainText(f"       {status}/: {os.path.basename(fileset['shp'])}")
                     else:
-                        self.log_box.appendPlainText(f"       {status}: (0 titik, dilewati)")
-                self.log_box.appendPlainText(f"       Gabungan: {os.path.basename(po['combined']['shp'])}")
+                        self.log_box.appendPlainText(f"       {status}/: (0 titik, dilewati)")
+                self.log_box.appendPlainText(f"       Gabungan/: {os.path.basename(po['combined']['shp'])}")
 
+            model_list = "\n".join(f"\u2022 {po['name']}/" for po in point_outputs)
             QMessageBox.information(
                 self, "Berhasil",
                 "Hasil perbandingan tersimpan di folder:\n" + out_dir +
                 "\n\nIsi folder:\n"
                 "\u2022 perbandingan_model.xlsx (ringkasan)\n"
-                "\u2022 <model>_TP.shp / _FP.shp / _FN.shp (+ .geojson/.csv) -- titik per status, "
-                "siap diberi simbol beda-beda di QGIS\n"
-                "\u2022 <model>_hasil.shp (+ .geojson/.csv) -- gabungan semua titik dengan kolom \"status\""
+                + model_list +
+                "\n\nDi dalam folder tiap model ada 4 sub-folder:\n"
+                "\u2022 TP / FP / FN -- titik per status, siap diberi simbol beda-beda di QGIS\n"
+                "\u2022 Gabungan -- semua titik (TP+FP+FN) dengan kolom \"status\""
             )
         except Exception:
             QMessageBox.critical(self, "Gagal", "Gagal menyimpan hasil:\n" + traceback.format_exc())
