@@ -26,6 +26,8 @@ class InferenceResult:
     boxes: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
     scores: np.ndarray = field(default_factory=lambda: np.zeros((0,)))
     classes: np.ndarray = field(default_factory=lambda: np.zeros((0,)))
+    class_names: list = None
+    class_counts: list = None
     shp_path: Path = None
     preview_path: Path = None
     preview_bgr: np.ndarray = None  # composite RGB + kotak, siap ditampilkan di canvas
@@ -33,6 +35,32 @@ class InferenceResult:
 
 class CancelledError(Exception):
     pass
+
+
+def resolve_class_name(class_id, class_names=None):
+    if class_names is None:
+        return str(int(class_id))
+    if isinstance(class_names, dict):
+        if class_id in class_names:
+            return str(class_names[class_id])
+        if str(class_id) in class_names:
+            return str(class_names[str(class_id)])
+    elif isinstance(class_names, (list, tuple, np.ndarray)):
+        idx = int(class_id)
+        if 0 <= idx < len(class_names):
+            return str(class_names[idx])
+    return str(int(class_id))
+
+
+def summarize_class_counts(classes, class_names=None):
+    values = np.asarray(classes, dtype=np.int32).reshape(-1)
+    if len(values) == 0:
+        return []
+    counts = {}
+    for cls_id in values:
+        key = int(cls_id)
+        counts[key] = counts.get(key, 0) + 1
+    return [(resolve_class_name(key, class_names), counts[key]) for key in sorted(counts)]
 
 
 # ============================================================
@@ -158,16 +186,22 @@ def filter_by_tile_ownership(boxes: np.ndarray, tile_ids: np.ndarray,
     return keep
 
 
-def nms_global(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float = 0.5):
+def nms_global(boxes: np.ndarray, scores: np.ndarray, classes: np.ndarray = None, iou_threshold: float = 0.5):
     """
     NMS standar berbasis IoU -- membuang box yang tumpang tindih tinggi
-    dengan box skor lebih tinggi. Dipakai SETELAH filter_by_tile_ownership,
-    jadi cukup NMS murni tanpa perlu fallback jarak/centroid lagi -- duplikat
-    tile-boundary sudah selesai di tahap ownership filtering.
+    dengan box skor lebih tinggi. Dilakukan per-kelas jika 'classes' diberikan.
     """
     if len(boxes) == 0:
         return []
-    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        
+    if classes is not None and len(classes) > 0:
+        max_coordinate = boxes.max() if boxes.size > 0 else 0
+        offsets = classes * (max_coordinate + 1)
+        _boxes = boxes + offsets[:, None]
+    else:
+        _boxes = boxes
+
+    x1, y1, x2, y2 = _boxes[:, 0], _boxes[:, 1], _boxes[:, 2], _boxes[:, 3]
     areas = (x2 - x1) * (y2 - y1)
 
     order = scores.argsort()[::-1]
@@ -272,7 +306,7 @@ def auto_detect_band_mapping_multiref(src, band_stats: dict, log=print) -> dict:
 
 def build_preview_bgr(raster_path: Path, boxes: np.ndarray, scores: np.ndarray,
                        stretch_lower_pct: float, stretch_upper_pct: float,
-                       max_dim: int = 2000) -> np.ndarray:
+                       max_dim: int = 2000, classes: np.ndarray = None) -> np.ndarray:
     """Composite RGB (band 1-3) dari raster asli + kotak deteksi. Return array BGR (bukan simpan file)."""
     with rasterio.open(raster_path) as src:
         h_orig, w_orig = src.height, src.width
@@ -302,17 +336,31 @@ def build_preview_bgr(raster_path: Path, boxes: np.ndarray, scores: np.ndarray,
     rgb = np.stack([stretch_for_display(r), stretch_for_display(g), stretch_for_display(b)], axis=-1)
     rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
-    for box, score in zip(boxes, scores):
+    class_colors = [(0, 255, 0), (0, 165, 255), (255, 0, 0), (255, 255, 0), (255, 0, 255)]
+    for idx, (box, score) in enumerate(zip(boxes, scores)):
         # Scale bounding box coordinates to match downsampled preview image
         x1, y1, x2, y2 = (box * scale).astype(int)
-        cv2.rectangle(rgb_bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(rgb_bgr, f"{score:.2f}", (x1, max(y1 - 5, 0)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+        cls_id = int(classes[idx]) if classes is not None and len(classes) > idx else 0
+        color = class_colors[cls_id % len(class_colors)]
+        cv2.rectangle(rgb_bgr, (x1, y1), (x2, y2), color, 2)
+        
+        # Gambar background gelap untuk teks
+        label = f"{score:.2f}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.4
+        thickness = 1
+        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        
+        tx = x1
+        ty = max(y1 - 5, th)
+        
+        cv2.rectangle(rgb_bgr, (tx, ty - th - 2), (tx + tw + 2, ty + baseline), (0, 0, 0), -1)
+        cv2.putText(rgb_bgr, label, (tx + 1, ty - 1), font, font_scale, color, thickness, cv2.LINE_AA)
 
     return rgb_bgr
 
 
-def save_shapefile(raster_path: Path, boxes, scores, classes, out_shp: Path, model_name: str = "model_gabungan"):
+def save_shapefile(raster_path: Path, boxes, scores, classes, out_shp: Path, model_name: str = "model_gabungan", class_names=None):
     import shapefile  # pyshp
 
     with rasterio.open(raster_path) as src:
@@ -334,8 +382,9 @@ def save_shapefile(raster_path: Path, boxes, scores, classes, out_shp: Path, mod
             x1_geo, y1_geo = rasterio.transform.xy(raster_transform, y1_px, x1_px)
             x2_geo, y2_geo = rasterio.transform.xy(raster_transform, y2_px, x2_px)
             polygon = [[x1_geo, y1_geo], [x2_geo, y1_geo], [x2_geo, y2_geo], [x1_geo, y2_geo], [x1_geo, y1_geo]]
+            class_name = resolve_class_name(int(cls), class_names)
             shp.poly([polygon])
-            shp.record(i, "sawit", round(float(score), 4), model_name,
+            shp.record(i, class_name, round(float(score), 4), model_name,
                        round(float(x1_px), 1), round(float(y1_px), 1),
                        round(float(x2_px), 1), round(float(y2_px), 1))
 
@@ -356,7 +405,7 @@ def load_detection_from_shapefile(shp_path: Path):
         fields = [f[0] for f in shp.fields[1:]]
         boxes = []
         scores = []
-        classes = []
+        class_labels = []
 
         for record in shp.iterRecords():
             values = dict(zip(fields, record))
@@ -366,15 +415,27 @@ def load_detection_from_shapefile(shp_path: Path):
             y2 = float(values.get("y2_px", 0.0))
             boxes.append([x1, y1, x2, y2])
             scores.append(float(values.get("confidence", 0.0)))
-            classes.append(0)
+            class_labels.append(str(values.get("kelas", "")) or "sawit")
 
     if not boxes:
-        return np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        return (
+            np.zeros((0, 4), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+            np.zeros((0,), dtype=np.float32),
+            [],
+        )
+
+    unique_names = []
+    for label in class_labels:
+        if label not in unique_names:
+            unique_names.append(label)
+    classes = np.array([unique_names.index(label) for label in class_labels], dtype=np.float32)
 
     return (
         np.asarray(boxes, dtype=np.float32),
         np.asarray(scores, dtype=np.float32),
-        np.asarray(classes, dtype=np.float32),
+        classes,
+        unique_names,
     )
 
 
@@ -423,6 +484,15 @@ class InferenceEngine:
 
         self.log_fn(f"Memuat model: {self.model_path.name} ...")
         self.model = YOLO(str(self.model_path))
+        names = getattr(self.model, "names", None)
+        if names is None:
+            self.class_names = None
+        elif isinstance(names, dict):
+            self.class_names = [str(v) for v in names.values()]
+        elif isinstance(names, (list, tuple, np.ndarray)):
+            self.class_names = [str(v) for v in names]
+        else:
+            self.class_names = None
         self.band_stats = load_band_stats(self.band_stats_path)
         self.log_fn(f"Model & band stats siap ({len(self.band_stats)} slot).")
 
@@ -586,7 +656,7 @@ class InferenceEngine:
         )
 
         # --- Tahap 2: NMS IoU standar (bersihkan sisa duplikat DALAM 1 tile) ---
-        keep_idx = nms_global(all_boxes, all_scores, iou_threshold=iou_threshold)
+        keep_idx = nms_global(all_boxes, all_scores, classes=all_classes, iou_threshold=iou_threshold)
         final_boxes = all_boxes[keep_idx]
         final_scores = all_scores[keep_idx]
         final_classes = all_classes[keep_idx]
@@ -611,19 +681,23 @@ class InferenceEngine:
 
         out_shp = out_dir / f"{out_stem}.shp"
         self.log_fn("Menyimpan shapefile...")
+        class_names = getattr(self, "class_names", None)
         save_shapefile(raster_path, final_boxes, final_scores, final_classes, out_shp,
-                       model_name=model_stem)
+                       model_name=model_stem, class_names=class_names)
         self.log_fn(f"Shapefile: {out_shp}")
 
         self.log_fn("Membuat preview visual...")
         preview_bgr = build_preview_bgr(raster_path, final_boxes, final_scores,
-                                         self.STRETCH_LOWER_PCT, self.STRETCH_UPPER_PCT)
+                                         self.STRETCH_LOWER_PCT, self.STRETCH_UPPER_PCT,
+                                         classes=final_classes)
         out_img = out_dir / f"{out_stem}.jpg"
         cv2.imwrite(str(out_img), preview_bgr)
 
         result.boxes = final_boxes
         result.scores = final_scores
         result.classes = final_classes
+        result.class_names = self.class_names if getattr(self, "class_names", None) is not None else class_names
+        result.class_counts = summarize_class_counts(final_classes, result.class_names)
         result.shp_path = out_shp
         result.preview_path = out_img
         result.preview_bgr = preview_bgr

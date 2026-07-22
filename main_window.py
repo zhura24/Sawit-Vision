@@ -1,14 +1,6 @@
 """
 main_window.py
 GUI utama aplikasi Sawit Vision - Deteksi Sawit Multispektral (PyQt6).
-
-Redesign TOTAL tampilan (dark/light theme, header modern, toolbar, sidebar
-kolaps, dashboard card, canvas profesional, progress bertahap, log console
-berwarna, settings dialog, about dialog, export multi-format, recent files)
-di atas engine `inference_core.py` yang TIDAK diubah logikanya sama sekali:
-CUDA/GPU detection, worker thread, batch inference, tile generation, band
-mapping, band stretch, preview generation, NMS, shapefile export, progress
-callback dan cancel process semuanya tetap dari inference_core.py apa adanya.
 """
 
 import csv
@@ -37,9 +29,10 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsPixmapItem,
-    QGraphicsScene, QGraphicsView, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsItem,
+    QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QStatusBar,
     QToolBar, QToolButton, QVBoxLayout, QWidget,
@@ -47,7 +40,7 @@ from PyQt6.QtWidgets import (
 
 from inference_core import (
     CancelledError, InferenceEngine, build_preview_bgr, is_multiref_schema,
-    load_band_stats, load_detection_from_shapefile,
+    load_band_stats, load_detection_from_shapefile, resolve_class_name
 )
 from comparison_widget import ComparisonPage
 
@@ -58,15 +51,13 @@ APP_ORG = "UniversitasDiponegoro"
 APP_NAME = "SawitVision"
 APP_TITLE = "Sawit Vision"
 APP_SUBTITLE = "Deteksi Sawit Multispektral"
-APP_VERSION = "2.1.0"
+APP_VERSION = "1.3.0"
 APP_TITLE_FULL = f"{APP_TITLE} \u2014 {APP_SUBTITLE}"
 
 # ============================================================
 # IKON -- digambar inline (vector, satu warna), tanpa aset eksternal
 # ============================================================
 class Icons:
-    """Pabrik ikon minimalis satu-warna, digambar lewat QPainter/QPainterPath."""
-
     _cache = {}
 
     @staticmethod
@@ -164,7 +155,6 @@ def _draw_clear(p, s, c):
 
 
 def _draw_settings(p, s, c):
-    """Ikon gear (roda gigi) sesungguhnya: cincin gigi persegi + lubang tengah."""
     import math
     cx, cy = s * 0.5, s * 0.5
     r_outer = s * 0.40
@@ -352,7 +342,6 @@ def _draw_trash(p, s, c):
 
 
 def _draw_compare(p, s, c):
-    """Ikon 'pembanding model': dua batang chart berdampingan + panah dua arah."""
     p.setBrush(QBrush(c))
     p.setPen(Qt.PenStyle.NoPen)
     p.drawRect(QRectF(s * 0.16, s * 0.44, s * 0.16, s * 0.40))
@@ -381,7 +370,6 @@ _ICON_DRAWERS = {
 
 
 def draw_logo_pixmap(size: int = 64, color: str = "#35c96b") -> QPixmap:
-    """Mark abstrak bertema daun sawit, digambar vektor (bukan file gambar)."""
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
@@ -402,14 +390,12 @@ def draw_logo_pixmap(size: int = 64, color: str = "#35c96b") -> QPixmap:
         path.quadTo(-size * 0.13, -leaf_len * 0.55, 0, 0)
         p.drawPath(path)
         p.restore()
-    p.setBrush(QBrush(base.darker(140)))
-    p.drawEllipse(QPointF(cx, cy), size * 0.1, size * 0.1)
     p.end()
     return pm
 
 
 # ============================================================
-# TEMA (Dark / Light) -- token warna + generator QSS
+# TEMA (Dark / Light)
 # ============================================================
 DARK_TOKENS = {
     "bg": "#1a1b1e", "bg_elevated": "#232428", "bg_panel": "#202124",
@@ -469,15 +455,19 @@ QWidget#dashboardRow { background-color: %(bg)s; border-bottom: 1px solid %(bord
 QFrame#dashboardCard {
     background-color: %(bg_card)s;
     border: 1px solid %(border)s;
-    border-radius: 6px;
+    border-radius: 8px;
 }
 QFrame#dashboardCard:hover {
     border: 1px solid %(accent)s;
     background-color: %(bg_hover)s;
 }
-QLabel#cardValue { font-size: 18px; font-weight: 700; color: %(text)s; }
+QLabel#cardValue {
+    font-size: 18px;
+    font-weight: 700;
+    color: %(text)s;
+}
 QLabel#cardTitle { font-size: 10px; color: %(text_faint)s; font-weight: 600; }
-
+QFrame#dashboardCard QLabel { background-color: transparent; border: none; }
 QFrame#sidebarCard {
     background-color: %(bg_card)s;
     border: 1px solid %(border)s;
@@ -490,7 +480,6 @@ QLabel#sidebarCardTitle {
     color: %(accent)s;
     letter-spacing: 0.5px;
 }
-
 QPushButton {
     background-color: %(bg_card)s;
     border: 1px solid %(border_light)s;
@@ -510,16 +499,11 @@ QPushButton#runButton {
     font-weight: 700;
 }
 QPushButton#runButton:hover { background-color: %(accent_hover)s; }
-QPushButton#runButton:disabled { background-color: %(bg_input)s; border: 1px solid %(border)s; color: %(text_faint)s; }
-
 QPushButton#cancelButton {
     background-color: %(danger)s;
     border: 1px solid %(danger_hover)s;
     color: white;
 }
-QPushButton#cancelButton:hover { background-color: %(danger_hover)s; }
-QPushButton#cancelButton:disabled { background-color: %(bg_input)s; border: 1px solid %(border)s; color: %(text_faint)s; }
-
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     background-color: %(bg_input)s;
     border: 1px solid %(border)s;
@@ -527,74 +511,6 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     padding: 5px 8px;
     color: %(text)s;
 }
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid %(accent)s; }
-
-QSpinBox, QDoubleSpinBox { padding-right: 22px; }
-QSpinBox::up-button, QDoubleSpinBox::up-button {
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    width: 20px;
-    height: 13px;
-    border-left: 1px solid %(border)s;
-    border-bottom: 1px solid %(border)s;
-    border-top-right-radius: 6px;
-    background-color: %(bg_elevated)s;
-}
-QSpinBox::down-button, QDoubleSpinBox::down-button {
-    subcontrol-origin: border;
-    subcontrol-position: bottom right;
-    width: 20px;
-    height: 13px;
-    border-left: 1px solid %(border)s;
-    border-bottom-right-radius: 6px;
-    background-color: %(bg_elevated)s;
-}
-QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-    background-color: %(bg_hover)s;
-}
-QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
-QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
-    background-color: %(accent)s;
-}
-QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-    image: none;
-    width: 0px;
-    height: 0px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid %(text)s;
-}
-QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-    image: none;
-    width: 0px;
-    height: 0px;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid %(text)s;
-}
-QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled {
-    border-bottom-color: %(text_faint)s;
-}
-QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {
-    border-top-color: %(text_faint)s;
-}
-QSpinBox::up-arrow:hover, QDoubleSpinBox::up-arrow:hover {
-    border-bottom-color: %(accent_text)s;
-}
-QSpinBox::down-arrow:hover, QDoubleSpinBox::down-arrow:hover {
-    border-top-color: %(accent_text)s;
-}
-
-QComboBox::drop-down { border: none; width: 24px; }
-QComboBox QAbstractItemView {
-    background-color: %(bg_elevated)s;
-    border: 1px solid %(border)s;
-    selection-background-color: %(accent)s;
-    selection-color: %(accent_text)s;
-    color: %(text)s;
-}
-
 QPlainTextEdit#logConsole {
     background-color: %(bg_input)s;
     border: none;
@@ -603,21 +519,6 @@ QPlainTextEdit#logConsole {
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 12px;
 }
-QSlider::groove:horizontal { height: 4px; background: %(border_light)s; border-radius: 2px; }
-QSlider::handle:horizontal {
-    background: %(accent)s; width: 14px; margin: -5px 0; border-radius: 7px;
-}
-QSlider::sub-page:horizontal { background: %(accent)s; border-radius: 2px; }
-QProgressBar {
-    border: 1px solid %(border)s;
-    border-radius: 6px;
-    text-align: center;
-    background-color: %(bg_input)s;
-    color: %(text)s;
-    height: 18px;
-    font-weight: bold;
-}
-QProgressBar::chunk { background-color: %(accent)s; border-radius: 5px; }
 QGraphicsView#canvasView { background-color: %(canvas_bg)s; border: none; }
 QWidget#canvasToolbar {
     background-color: %(bg_elevated)s;
@@ -625,90 +526,30 @@ QWidget#canvasToolbar {
     border-radius: 10px;
 }
 QStatusBar { background-color: %(bg_panel)s; color: %(text_faint)s; border-top: 1px solid %(border)s; }
-
-QFrame#stepperDotPending {
-    background-color: %(border)s;
-    border-radius: 5px;
-}
-QFrame#stepperDotActive {
-    background-color: %(info)s;
-    border: 1px solid %(text)s;
-    border-radius: 5px;
-}
-QFrame#stepperDotDone {
-    background-color: %(accent)s;
-    border-radius: 5px;
-}
-
-QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
-QScrollBar::handle:vertical { background: %(border_light)s; border-radius: 4px; min-height: 24px; }
-QScrollBar::handle:vertical:hover { background: %(text_faint)s; }
-QScrollBar:horizontal { background: transparent; height: 8px; }
-QScrollBar::handle:horizontal { background: %(border_light)s; border-radius: 4px; min-width: 24px; }
+QFrame#stepperDotPending { background-color: %(border)s; border-radius: 5px; }
+QFrame#stepperDotActive { background-color: %(info)s; border: 1px solid %(text)s; border-radius: 5px; }
+QFrame#stepperDotDone { background-color: %(accent)s; border-radius: 5px; }
 QTableWidget, QListWidget {
     background-color: %(bg_card)s;
     alternate-background-color: %(bg_panel)s;
     border: 1px solid %(border)s;
     border-radius: 6px;
     color: %(text)s;
-    gridline-color: %(border)s;
-    selection-background-color: %(accent)s;
-    selection-color: %(accent_text)s;
-}
-QListWidget::item { padding: 4px 6px; border-radius: 4px; }
-QListWidget::item:selected { background-color: %(accent)s; color: %(accent_text)s; }
-QTableWidget::item { padding: 3px 4px; }
-QHeaderView::section {
-    background-color: %(bg_panel)s;
-    color: %(text_dim)s;
-    padding: 6px 8px;
-    border: none;
-    border-bottom: 1px solid %(border)s;
-    border-right: 1px solid %(border)s;
-    font-weight: 600;
-}
-QTableCornerButton::section { background-color: %(bg_panel)s; border: none; }
-QSplitter::handle { background-color: %(border)s; }
-QSplitter::handle:horizontal { width: 2px; }
-QSplitter::handle:vertical { height: 2px; }
-QSplitter::handle:hover { background-color: %(accent)s; }
-QFrame#sidebarCard QLabel { color: %(text)s; }
-QMenu { background-color: %(bg_elevated)s; border: 1px solid %(border)s; border-radius: 8px; padding: 4px; }
-QMenu::item { padding: 6px 22px 6px 12px; border-radius: 5px; color: %(text)s; }
-QMenu::item:selected { background-color: %(accent)s; color: %(accent_text)s; }
-QToolTip {
-    background-color: %(bg_elevated)s; color: %(text)s;
-    border: 1px solid %(border)s; padding: 4px 6px; border-radius: 4px;
 }
 """
-
 
 def build_qss(tokens: dict) -> str:
     return QSS_TEMPLATE % tokens
 
-
 DARK_QSS = build_qss(DARK_TOKENS)
 LIGHT_QSS = build_qss(LIGHT_TOKENS)
 
-
-# ============================================================
-# TAHAPAN PROSES (untuk stage-stepper progress) -- deteksi lewat
-# potongan kata pada log yang SUDAH dipancarkan inference_core.py.
-# ============================================================
-STAGES = [
-    "Model", "Raster", "Tile", "YOLO", "NMS", "Shapefile", "Preview", "Selesai"
-]
-
+STAGES = ["Model", "Raster", "Tile", "YOLO", "NMS", "Shapefile", "Preview", "Selesai"]
 _STAGE_TRIGGERS = [
-    ("memuat model", 0),
-    ("membuka raster", 1),
-    ("akan diproses", 2),
-    ("batch selesai", 3),
-    ("total deteksi sebelum nms", 4),
-    ("menyimpan shapefile", 5),
-    ("membuat preview visual", 6),
+    ("memuat model", 0), ("membuka raster", 1), ("akan diproses", 2),
+    ("batch selesai", 3), ("total deteksi sebelum nms", 4),
+    ("menyimpan shapefile", 5), ("membuat preview visual", 6),
 ]
-
 
 def detect_stage(log_line: str, current: int) -> int:
     low = log_line.lower()
@@ -716,7 +557,6 @@ def detect_stage(log_line: str, current: int) -> int:
         if keyword in low and idx >= current:
             return idx
     return current
-
 
 def classify_log(msg: str) -> str:
     low = msg.lower()
@@ -729,13 +569,10 @@ def classify_log(msg: str) -> str:
     return "INFO"
 
 
-# ============================================================
-# WORKER THREAD
-# ============================================================
 class InferenceWorker(QObject):
     log = pyqtSignal(str)
     progress = pyqtSignal(int, int)
-    finished = pyqtSignal(object)   # InferenceResult
+    finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
     def __init__(self, model_path, stats_path, raster_path, conf, tile_size,
@@ -764,8 +601,7 @@ class InferenceWorker(QObject):
             if self.force_cpu:
                 self._prev_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
                 os.environ["CUDA_VISIBLE_DEVICES"] = ""
-                self.log.emit("Mode 'Paksa CPU' aktif dari Pengaturan -- GPU disembunyikan dari proses ini.")
-
+                self.log.emit("Mode 'Paksa CPU' aktif.")
             engine = InferenceEngine(
                 self.model_path, self.stats_path,
                 log_fn=self.log.emit,
@@ -816,9 +652,27 @@ class QuickPreviewWorker(QObject):
             self.failed.emit(str(e))
 
 
-# ============================================================
-# CANVAS (zoomable/pannable)
-# ============================================================
+class DetectionDetailsDialog(QDialog):
+    def __init__(self, parent, title: str, details: list):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(420, 280)
+        layout = QVBoxLayout(self)
+        table = QTableWidget(0, 2)
+        table.setHorizontalHeaderLabels(["Keterangan", "Nilai"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setColumnWidth(0, 140)
+        table.setRowCount(len(details))
+        for row, (label, value) in enumerate(details):
+            table.setItem(row, 0, QTableWidgetItem(str(label)))
+            table.setItem(row, 1, QTableWidgetItem(str(value)))
+        layout.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+
 class CanvasView(QGraphicsView):
     zoomChanged = pyqtSignal(float)
 
@@ -829,6 +683,8 @@ class CanvasView(QGraphicsView):
         self.setScene(self.scene_)
         self.pixmap_item = None
         self._zoom = 1.0
+        self._overlay_items = []
+        self._current_result = None
         self.setRenderHints(self.renderHints() | QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
@@ -850,13 +706,64 @@ class CanvasView(QGraphicsView):
         self.pixmap_item = QGraphicsPixmapItem(pixmap)
         self.scene_.addItem(self.pixmap_item)
         self.scene_.setSceneRect(self.pixmap_item.boundingRect())
+        self._overlay_items = []
+        self._current_result = None
         self.fit_to_view()
+
+    def show_result(self, result, class_names=None):
+        self._current_result = result
+        self._overlay_items = []
+        if self.pixmap_item is None:
+            return
+        if result is None or len(result.boxes) == 0:
+            return
+        for idx, (box, score, cls_id) in enumerate(zip(result.boxes, result.scores, result.classes)):
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            rect = QGraphicsRectItem(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+            rect.setPen(QPen(QColor(0, 255, 0), 2))
+            rect.setBrush(QBrush(QColor(0, 255, 0, 0)))
+            rect.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            rect.setData(0, {
+                "index": idx, "box": box, "score": float(score),
+                "class_id": int(cls_id),
+                "class_name": str(class_names[int(cls_id)] if class_names and 0 <= int(cls_id) < len(class_names) else int(cls_id)),
+            })
+            self.scene_.addItem(rect)
+            self._overlay_items.append(rect)
+
+    def _open_detail_for_item(self, item):
+        if item is None:
+            return False
+        data = item.data(0)
+        if not data:
+            return False
+        details = [
+            ("Index", data["index"] + 1), ("Kelas", data["class_name"]),
+            ("Confidence", f"{data['score']:.3f}"),
+            ("x1", round(float(data["box"][0]), 2)), ("y1", round(float(data["box"][1]), 2)),
+            ("x2", round(float(data["box"][2]), 2)), ("y2", round(float(data["box"][3]), 2)),
+        ]
+        DetectionDetailsDialog(self, "Detail Deteksi", details).exec()
+        return True
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(event.position().toPoint())
+            if self._open_detail_for_item(item):
+                return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self._current_result is None or not self._overlay_items:
+            super().mouseDoubleClickEvent(event)
+            return
+        item = self.itemAt(event.position().toPoint())
+        if self._open_detail_for_item(item):
+            return
+        super().mouseDoubleClickEvent(event)
 
     def has_image(self) -> bool:
         return self.pixmap_item is not None
-
-    def current_pixmap(self):
-        return self.pixmap_item.pixmap() if self.pixmap_item else None
 
     def fit_to_view(self):
         if self.pixmap_item is not None:
@@ -895,9 +802,6 @@ class CanvasView(QGraphicsView):
         return self.pixmap_item.pixmap().save(path)
 
 
-# ============================================================
-# LOG CONSOLE
-# ============================================================
 class LogConsole(QPlainTextEdit):
     LEVEL_COLORS = {
         "INFO": "#06b6d4", "SUCCESS": "#10b981",
@@ -915,19 +819,12 @@ class LogConsole(QPlainTextEdit):
         ts = datetime.now().strftime("%H:%M:%S")
         color = self.LEVEL_COLORS.get(level, "#cbd5e1")
         safe = (message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
-        html = (
-            f'<span style="color:#64748b;">[{ts}]</span> '
-            f'<span style="color:{color}; font-weight:600;">{level:<7}</span> '
-            f'<span>{safe}</span>'
-        )
+        html = f'<span style="color:#64748b;">[{ts}]</span> <span style="color:{color}; font-weight:600;">{level:<7}</span> <span>{safe}</span>'
         self.appendHtml(html)
         sb = self.verticalScrollBar()
         sb.setValue(sb.maximum())
 
 
-# ============================================================
-# STAGE STEPPER (Dot bar horizontal hemat ruang)
-# ============================================================
 class StageStepper(QWidget):
     def __init__(self):
         super().__init__()
@@ -940,7 +837,6 @@ class StageStepper(QWidget):
         self.status_label.setStyleSheet("font-weight: bold; font-size: 11px;")
         layout.addWidget(self.status_label)
 
-        # Baris bulatan dot
         dots_row = QWidget()
         dots_layout = QHBoxLayout(dots_row)
         dots_layout.setContentsMargins(0, 0, 0, 0)
@@ -986,13 +882,13 @@ class StageStepper(QWidget):
             dot.style().polish(dot)
 
 
-# ============================================================
-# DASHBOARD CARD
-# ============================================================
 class DashboardCard(QFrame):
+    clicked = pyqtSignal()
+
     def __init__(self, icon_name: str, title: str, accent: str = "#10b981"):
         super().__init__()
         self.setObjectName("dashboardCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._accent = accent
         self.setMinimumWidth(150)
         self.setMinimumHeight(64)
@@ -1020,10 +916,12 @@ class DashboardCard(QFrame):
     def restyle_icon(self, icon_name: str, color: str):
         self.icon_label.setPixmap(Icons.pixmap(icon_name, color, 26))
 
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
-# ============================================================
-# SETTINGS DIALOG
-# ============================================================
+
 class SettingsDialog(QDialog):
     def __init__(self, parent, current: dict):
         super().__init__(parent)
@@ -1079,9 +977,7 @@ class SettingsDialog(QDialog):
 
         layout.addLayout(form)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -1103,9 +999,6 @@ class SettingsDialog(QDialog):
         }
 
 
-# ============================================================
-# ABOUT DIALOG
-# ============================================================
 class AboutDialog(QDialog):
     def __init__(self, parent, accent="#10b981"):
         super().__init__(parent)
@@ -1176,7 +1069,7 @@ class AboutDialog(QDialog):
 
 
 # ============================================================
-# SAWIT-CHAN PIXEL DECORATION WIDGET
+# SAWIT-CHAN PIXEL DECORATION WIDGET (BEBAS ROAMING & DRAG STABLE)
 # ============================================================
 class SawitChanWidget(QLabel):
     def __init__(self, parent):
@@ -1187,18 +1080,14 @@ class SawitChanWidget(QLabel):
         self.state = 'walk'
         self.direction = 'right'
         self.current_frame = 0
-        _toolbar_w = 450
-        try:
-            _toolbar_w = parent.toolbar.sizeHint().width()
-        except Exception:
-            pass
-        self.x_pos = _toolbar_w + 30.0  # otomatis nyesuaiin lebar toolbar asli (berapa pun jumlah tombolnya)
-        self.y_pos = 63     # Centered vertically in the 46px toolbar (y: 60-106)
-        self.speed = 0.5    # Pixels per frame step
+        
+        # POSISI AWAL AMAN DI ATAS LANTAI CANVAS PREVIEW (DALAM KOORDINAT WINDOW UTAMA)
+        self.x_pos = 380.0  
+        self.y_pos = 650.0  
+        self.speed = 0.5    
         
         self.load_and_process_sprites()
         
-        # Create speech bubble
         self.bubble = QLabel(parent)
         self.bubble.setStyleSheet("""
             QLabel {
@@ -1215,26 +1104,102 @@ class SawitChanWidget(QLabel):
         self.bubble.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bubble.hide()
         
-        # Timers for animation and movement
         self.anim_timer = QTimer(self)
         self.anim_timer.timeout.connect(self.next_frame)
-        self.anim_timer.start(150) # 150ms per animation frame
+        self.anim_timer.start(150)
         
         self.move_timer = QTimer(self)
         self.move_timer.timeout.connect(self.update_position)
-        self.move_timer.start(30) # 30ms for smooth position update
+        self.move_timer.start(30)
         
         self.state_timer = QTimer(self)
         self.state_timer.timeout.connect(self.randomize_state)
-        self.state_timer.start(8000) # Re-evaluate state every 8 seconds
+        self.state_timer.start(8000)
+
+        # Smooth Dragging (Lerp)
+        self._target_x = float(self.x_pos)
+        self._target_y = float(self.y_pos)
+        self.drag_timer = QTimer(self)
+        self.drag_timer.timeout.connect(self._smooth_drag_update)
+        self.drag_timer.setInterval(16)
+        self._drag_active = False
+        self._drag_start_global = None
+        self._drag_start_pos = None
         
         self.update_display()
         if any(self.sprites.values()):
             self.show()
+            self.raise_()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.trigger_interaction()
+            self._drag_active = True
+            self._drag_start_global = event.globalPosition().toPoint()
+            self._drag_start_pos = self.pos()
+            self._target_x = float(self.pos().x())
+            self._target_y = float(self.pos().y())
+            
+            self.move_timer.stop()
+            self.state = 'interact'
+            self.current_frame = 0
+            self.update_display()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.drag_timer.start()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_active and self.parent():
+            delta = event.globalPosition().toPoint() - self._drag_start_global
+            new_x = self._drag_start_pos.x() + delta.x()
+            new_y = self._drag_start_pos.y() + delta.y()
+            
+            parent_w = self.parent().width()
+            parent_h = self.parent().height()
+            
+            self._target_x = float(max(0, min(new_x, parent_w - self.width())))
+            self._target_y = float(max(0, min(new_y, parent_h - self.height())))
+            event.accept()
+
+    def _smooth_drag_update(self):
+        factor = 0.15 
+        self.x_pos += (self._target_x - self.x_pos) * factor
+        self.y_pos += (self._target_y - self.y_pos) * factor
+        
+        self.move(int(self.x_pos), int(self.y_pos))
+        
+        if self.bubble.isVisible():
+            bx = int(self.x_pos + (self.width() - self.bubble.width()) / 2)
+            bx = max(5, bx)
+            by = int(self.y_pos) - self.bubble.height() - 4
+            by = max(2, by)
+            self.bubble.move(bx, by)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._drag_active:
+                self._drag_active = False
+                self.drag_timer.stop()
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+                
+                delta_x = abs(self.x_pos - self._drag_start_pos.x())
+                delta_y = abs(self.y_pos - self._drag_start_pos.y())
+                
+                if delta_x < 5 and delta_y < 5:
+                    self.trigger_interaction()
+                else:
+                    # Kunci posisi Y saat ini sebagai lantai jalan baru agar tidak reset
+                    self.y_pos = float(self.pos().y())
+                    self._target_y = self.y_pos
+                    QTimer.singleShot(200, self._resume_after_drag)
+                    
+                event.accept()
+
+    def _resume_after_drag(self):
+        self.state = 'walk'
+        self.current_frame = 0
+        self.bubble.hide()
+        self.move_timer.start(30)
+        self.update_display()
             
     def is_gpu_active(self):
         parent = self.parent()
@@ -1252,68 +1217,35 @@ class SawitChanWidget(QLabel):
 
     def trigger_interaction(self):
         import random
-        
         gpu_active = self.is_gpu_active()
-        
-        # Count clicks for special reactions
         self._click_count = getattr(self, '_click_count', 0) + 1
         
         if self._click_count >= 5:
-            # Annoyed mode - natural, no anime
-            phrases = [
-                "Aduh diklik mulu sih! 😤",
-                "Iya iya aku tau, stop klik aku! 😒",
-                "Kerjain sawitnya dulu sana! 😑",
-                "Hei, aku lagi jalan nih! 😠",
-            ]
+            phrases = ["Aduh diklik mulu sih! 😤", "Iya iya aku tau, stop klik aku! 😒", "Kerjain sawitnya dulu sana! 😑", "Hei, aku lagi jalan nih! 😠"]
         elif gpu_active:
-            phrases = [
-                "Halo! ✨",
-                "Sawit Vision siap! 🌴",
-                "Jangan diklik mulu dong 😅",
-                "Semangat ya! 😊",
-                "Lagi patroli nih... 🌿",
-                "Ada apa? 👀",
-                "GPU nyala, gas! ⚡",
-                "Cuaca bagus hari ini! ☀️",
-                "Deteksi sawit jalan! 🚀",
-                "Jangan lupa istirahat ya! 💧",
-            ]
+            phrases = ["Halo! ✨", "Sawit Vision siap! 🌴", "Jangan diklik mulu dong 😅", "Semangat ya! 😊", "Lagi patroli nih... 🌿", "Ada apa? 👀", "GPU nyala, gas! ⚡", "Cuaca bagus hari ini! ☀️"]
         else:
-            phrases = [
-                "Halo! ✨",
-                "GPU-nya off... sabar ya! 🐢",
-                "Lagi agak lambat nih 😅",
-                "Kalau GPU nyala lebih cepet! ⚡",
-                "CPU mode, tapi tetep jalan! ⚙️",
-                "Sabar ya, lagi proses! ⌛",
-                "Nyalain GPU-nya dulu dong! 😬",
-                "Tetep semangat! 💪",
-            ]
+            phrases = ["Halo! ✨", "GPU-nya off... sabar ya! 🐢", "Lagi agak lambat nih 😅", "Kalau GPU nyala lebih cepet! ⚡", "CPU mode, tapi tetep jalan! ⚙️"]
         
         self.state = 'interact'
         self.current_frame = 0
         self.update_display()
         
-        # Show speech bubble
         text = random.choice(phrases)
         self.bubble.setText(text)
         self.bubble.adjustSize()
         
-        # Position bubble - always above the character
         bx = int(self.x_pos + (self.width() - self.bubble.width()) / 2)
-        bx = max(5, bx)  # Don't go offscreen left
-        by = self.y_pos - self.bubble.height() - 4
+        bx = max(5, bx) 
+        by = int(self.y_pos) - self.bubble.height() - 4
         by = max(2, by)
         self.bubble.move(bx, by)
         self.bubble.show()
         self.bubble.raise_()
         
-        # Reset click count after a while
         if self._click_count >= 7:
             QTimer.singleShot(5000, lambda: setattr(self, '_click_count', 0))
         
-        # Single shot to end interaction
         QTimer.singleShot(2200, self.stop_interaction)
 
     def stop_interaction(self):
@@ -1330,43 +1262,30 @@ class SawitChanWidget(QLabel):
             r"C:\Users\user\Downloads\Savvision\sawit-chan.png",
         ]
         if getattr(_sys, "frozen", False):
-            # Jalan sebagai .exe hasil PyInstaller: __file__ nunjuk ke folder temp _MEIxxxx,
-            # cek juga folder tempat .exe itu sendiri berada.
             candidates.insert(0, os.path.join(os.path.dirname(_sys.executable), "sawit-chan.png"))
             if hasattr(_sys, "_MEIPASS"):
                 candidates.insert(0, os.path.join(_sys._MEIPASS, "sawit-chan.png"))
 
         path = next((c for c in candidates if os.path.exists(c)), None)
         if path is None:
-            print("[sawit-chan] File sawit-chan.png TIDAK ditemukan. Dicek di:")
-            for c in candidates:
-                print("   -", c)
             self.hide()
             return
 
         try:
             img = cv2.imread(path)
             if img is None:
-                print(f"[sawit-chan] File ketemu di '{path}' tapi cv2.imread gagal baca "
-                      f"(file corrupt / format gak didukung / path ada karakter aneh).")
                 self.hide()
                 return
 
-            print(f"[sawit-chan] OK, load dari: {path}  (ukuran gambar: {img.shape[1]}x{img.shape[0]})")
-
-            cell_w = 172
-            cell_h = 180
+            cell_w, cell_h = 172, 180
             col_start = 32
-            row_starts = [20, 200, 395]  # Row 0: idle, Row 1: walk, Row 2: interact
+            row_starts = [20, 200, 395]  
             target_w, target_h = 32, 40
 
             def _process_cell(rx, ry):
                 crop = img[ry:ry + 155, rx:rx + 120]
                 if crop.size == 0 or crop.shape[0] < 10 or crop.shape[1] < 10:
-                    raise ValueError(
-                        f"Crop kosong/kekecilan di rx={rx}, ry={ry} (gambar cuma {img.shape[1]}x{img.shape[0]}, "
-                        f"berarti koordinat sprite-sheet gak cocok sama ukuran file sawit-chan.png sekarang)."
-                    )
+                    raise ValueError("Crop error")
                 hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
                 h_val, s_val, v_val = cv2.split(hsv)
                 bg_mask = (s_val < 35) & (v_val > 60)
@@ -1382,11 +1301,7 @@ class SawitChanWidget(QLabel):
                 rgba = np.ascontiguousarray(rgba)
                 qimg = QImage(rgba.data, w_crop, h_crop, w_crop * 4, QImage.Format.Format_ARGB32)
                 pixmap = QPixmap.fromImage(qimg.copy())
-                return pixmap.scaled(
-                    target_w, target_h,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.FastTransformation,
-                )
+                return pixmap.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation)
 
             for row_idx, row_name in [(0, 'idle'), (1, 'walk')]:
                 for col in range(4):
@@ -1399,11 +1314,7 @@ class SawitChanWidget(QLabel):
                 ry = row_starts[2]
                 self.sprites['interact'].append(_process_cell(rx, ry))
 
-            print(f"[sawit-chan] Sprite siap: idle={len(self.sprites['idle'])}, "
-                  f"walk={len(self.sprites['walk'])}, interact={len(self.sprites['interact'])}")
-
-        except Exception as e:
-            print(f"[sawit-chan] GAGAL proses sprite: {e}")
+        except Exception:
             self.hide()
             return
 
@@ -1418,15 +1329,11 @@ class SawitChanWidget(QLabel):
         frames = self.sprites.get(self.state, [])
         if not frames or self.current_frame >= len(frames):
             return
-            
         pixmap = frames[self.current_frame]
-        
-        # Mirror if walking left
         if self.direction == 'left':
             img = pixmap.toImage()
             mirrored = img.mirrored(True, False)
             pixmap = QPixmap.fromImage(mirrored)
-            
         self.setPixmap(pixmap)
 
     def update_position(self):
@@ -1434,14 +1341,12 @@ class SawitChanWidget(QLabel):
             return
             
         parent_w = self.parent().width()
-        toolbar = getattr(self.parent(), "toolbar", None)
-        min_x = (toolbar.sizeHint().width() + 20) if toolbar is not None else 420
+        min_x = 330
         max_x = parent_w - self.width() - 10
         
         if max_x <= min_x:
             return
             
-        # Ensure position bounds on window resize
         if self.x_pos > max_x:
             self.x_pos = max_x
         if self.x_pos < min_x:
@@ -1463,13 +1368,12 @@ class SawitChanWidget(QLabel):
                     self.state = 'idle'
                     self.current_frame = 0
                     
-        self.move(int(self.x_pos), self.y_pos)
+        self.move(int(self.x_pos), int(self.y_pos))
 
     def randomize_state(self):
         import random
         if self.state == 'interact':
             return
-        # 75% walking, 25% idle
         if random.random() < 0.75:
             self.state = 'walk'
         else:
@@ -1477,9 +1381,6 @@ class SawitChanWidget(QLabel):
         self.current_frame = 0
 
 
-# ============================================================
-# HEADER BAR
-# ============================================================
 class HeaderBar(QWidget):
     themeToggled = pyqtSignal()
     settingsRequested = pyqtSignal()
@@ -1495,6 +1396,7 @@ class HeaderBar(QWidget):
 
         self.logo_label = QLabel()
         self.logo_label.setPixmap(draw_logo_pixmap(36, accent))
+        self.logo_label.setStyleSheet("background: transparent; padding: 0px;")
         layout.addWidget(self.logo_label)
 
         title_col = QVBoxLayout()
@@ -1510,15 +1412,10 @@ class HeaderBar(QWidget):
         layout.addStretch(1)
 
         self.theme_btn = QToolButton()
-        self.theme_btn.setToolTip("Ganti tema terang/gelap")
         self.theme_btn.clicked.connect(self.themeToggled.emit)
-
         self.settings_btn = QToolButton()
-        self.settings_btn.setToolTip("Pengaturan")
         self.settings_btn.clicked.connect(self.settingsRequested.emit)
-
         self.about_btn = QToolButton()
-        self.about_btn.setToolTip("Tentang aplikasi")
         self.about_btn.clicked.connect(self.aboutRequested.emit)
 
         for b in (self.theme_btn, self.settings_btn, self.about_btn):
@@ -1537,9 +1434,6 @@ class HeaderBar(QWidget):
         self.logo_label.setPixmap(draw_logo_pixmap(36, accent))
 
 
-# ============================================================
-# MAIN WINDOW
-# ============================================================
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1568,26 +1462,21 @@ class MainWindow(QMainWindow):
         self._update_run_enabled()
         self._update_gpu_card()
 
-        # Instantiate Sawit-chan (pixel decoration) on MainWindow
+        # Sawit-chan kembali diparentkan ke MainWindow supaya bebas roam di seluruh layar aplikasi
         self.sawit_chan = SawitChanWidget(self)
 
-    # ------------------------------------------------------
-    # UI CONSTRUCTION
-    # ------------------------------------------------------
     def _build_ui(self):
         central = QWidget()
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # ---- Header ----
         self.header = HeaderBar()
         self.header.themeToggled.connect(self.toggle_theme)
         self.header.settingsRequested.connect(self.open_settings)
         self.header.aboutRequested.connect(self.open_about)
         outer.addWidget(self.header)
 
-        # ---- Toolbar ----
         self.toolbar = QToolBar()
         self.toolbar.setObjectName("mainToolbar")
         self.toolbar.setIconSize(QSize(20, 20))
@@ -1595,46 +1484,22 @@ class MainWindow(QMainWindow):
         self.toolbar.setMovable(False)
 
         self.act_open_raster = QAction("Buka Raster", self)
-        self.act_open_raster.setToolTip("Buka Raster (TIF)")
-        self.act_open_raster.setStatusTip("Membuka berkas raster multispektral")
         self.act_open_raster.triggered.connect(self.pick_raster)
-
         self.act_load_model = QAction("Muat Model", self)
-        self.act_load_model.setToolTip("Muat Model YOLO (.pt)")
-        self.act_load_model.setStatusTip("Memilih file model bobot YOLO")
         self.act_load_model.triggered.connect(self.pick_model)
-
         self.act_band_stats = QAction("Band Stats", self)
-        self.act_band_stats.setToolTip("Band Stats (JSON)")
-        self.act_band_stats.setStatusTip("Memilih file statistik band raster")
         self.act_band_stats.triggered.connect(self.pick_stats)
-
         self.act_run = QAction("Jalankan", self)
-        self.act_run.setToolTip("Jalankan Deteksi")
-        self.act_run.setStatusTip("Memulai proses inference deteksi")
         self.act_run.triggered.connect(self.start_inference)
-
         self.act_stop = QAction("Stop", self)
-        self.act_stop.setToolTip("Batalkan Deteksi")
-        self.act_stop.setStatusTip("Membatalkan proses inference yang berjalan")
         self.act_stop.triggered.connect(self.cancel_inference)
         self.act_stop.setEnabled(False)
-
         self.act_clear = QAction("Bersihkan", self)
-        self.act_clear.setToolTip("Bersihkan Layout")
-        self.act_clear.setStatusTip("Reset seluruh input dan canvas")
         self.act_clear.triggered.connect(self.clear_all)
-
         self.act_load_result = QAction("Muat Hasil", self)
-        self.act_load_result.setToolTip("Muat Hasil Shapefile")
-        self.act_load_result.setStatusTip("Memuat hasil deteksi lama dari file .shp")
         self.act_load_result.triggered.connect(self.load_existing_result)
 
         self.act_model_comparison = QAction("Pembanding Model", self)
-        self.act_model_comparison.setToolTip("Pembanding Model")
-        self.act_model_comparison.setStatusTip(
-            "Bandingkan centroid manual vs beberapa hasil inference model AI"
-        )
         self.act_model_comparison.setCheckable(True)
         self.act_model_comparison.toggled.connect(self.toggle_comparison_page)
 
@@ -1646,7 +1511,6 @@ class MainWindow(QMainWindow):
         self.toolbar.addSeparator()
 
         self.export_btn = QToolButton()
-        self.export_btn.setToolTip("Export Hasil")
         self.export_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.export_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.export_menu = QMenu(self.export_btn)
@@ -1669,10 +1533,8 @@ class MainWindow(QMainWindow):
 
         outer.addWidget(self.toolbar)
 
-        # ---- Content: sidebar | (dashboard + canvas + log) ----
         content_split = QSplitter(Qt.Orientation.Horizontal)
 
-        # Panel Kontrol Kiri (Clean, Non-accordion, Non-cluttered)
         self.sidebar_scroll = QScrollArea()
         self.sidebar_scroll.setObjectName("sidebarScroll")
         self.sidebar_scroll.setWidgetResizable(True)
@@ -1710,11 +1572,8 @@ class MainWindow(QMainWindow):
         content_split.setStretchFactor(1, 1)
         content_split.setSizes([340, 1100])
 
-        # ---- Stack halaman: 0 = Deteksi, 1 = Pembanding Model ----
         self.detection_page = content_split
         self.comparison_page = ComparisonPage()
-        # Samakan ikon halaman ini dengan tema aktif saat ini (dark/light),
-        # supaya tidak balik ke ikon default gelap kalau app dibuka dalam mode light.
         _init_tokens = DARK_TOKENS if self._is_dark else LIGHT_TOKENS
         self.comparison_page.apply_theme_icons(
             _init_tokens["text"], _init_tokens["accent"], _init_tokens["accent_text"]
@@ -1745,22 +1604,16 @@ class MainWindow(QMainWindow):
         h.setSpacing(4)
 
         self.btn_zoom_out = QToolButton()
-        self.btn_zoom_out.setToolTip("Zoom out")
         self.btn_zoom_out.clicked.connect(self.canvas.zoom_out)
         self.btn_zoom_in = QToolButton()
-        self.btn_zoom_in.setToolTip("Zoom in")
         self.btn_zoom_in.clicked.connect(self.canvas.zoom_in)
         self.btn_fit = QToolButton()
-        self.btn_fit.setToolTip("Fit ke layar")
         self.btn_fit.clicked.connect(self.canvas.fit_to_view)
         self.btn_actual = QToolButton()
-        self.btn_actual.setToolTip("Ukuran asli (100%)")
         self.btn_actual.clicked.connect(self.canvas.actual_size)
         self.btn_reset = QToolButton()
-        self.btn_reset.setToolTip("Reset tampilan")
         self.btn_reset.clicked.connect(self.canvas.fit_to_view)
         self.btn_save_img = QToolButton()
-        self.btn_save_img.setToolTip("Simpan gambar canvas")
         self.btn_save_img.clicked.connect(lambda: self.export_image("png"))
 
         self.zoom_label = QLabel("100%")
@@ -1797,7 +1650,6 @@ class MainWindow(QMainWindow):
             h.addWidget(c, 1)
 
     def _build_sidebar(self):
-        # 1. Card Output (nama file + folder tujuan output, ditentukan SEBELUM run)
         card_recent = QFrame()
         card_recent.setObjectName("sidebarCard")
         lay_recent = QVBoxLayout(card_recent)
@@ -1808,21 +1660,15 @@ class MainWindow(QMainWindow):
         lbl_recent_title.setObjectName("sidebarCardTitle")
         lay_recent.addWidget(lbl_recent_title)
 
-        lbl_out_name = QLabel("Nama Output:")
-        lay_recent.addWidget(lbl_out_name)
         self.output_name_edit = QLineEdit()
-        self.output_name_edit.setPlaceholderText("Otomatis (deteksi_<raster>__<model>)")
+        self.output_name_edit.setPlaceholderText("Otomatis")
         lay_recent.addWidget(self.output_name_edit)
 
-        lbl_out_dir = QLabel("Folder Output:")
-        lay_recent.addWidget(lbl_out_dir)
         out_dir_row = QHBoxLayout()
-        out_dir_row.setSpacing(6)
         self.output_dir_edit = QLineEdit()
-        self.output_dir_edit.setPlaceholderText("Otomatis (folder sama dengan raster)")
+        self.output_dir_edit.setPlaceholderText("Otomatis")
         self.btn_pick_out_dir = QToolButton()
         self.btn_pick_out_dir.setFixedSize(32, 28)
-        self.btn_pick_out_dir.setToolTip("Pilih folder output")
         self.btn_pick_out_dir.clicked.connect(self.pick_output_dir)
         out_dir_row.addWidget(self.output_dir_edit, 1)
         out_dir_row.addWidget(self.btn_pick_out_dir)
@@ -1834,7 +1680,6 @@ class MainWindow(QMainWindow):
 
         self.sidebar_layout.addWidget(card_recent)
 
-        # 2. Card Data Masukan (Konfigurasi Input)
         card_input = QFrame()
         card_input.setObjectName("sidebarCard")
         lay_input = QVBoxLayout(card_input)
@@ -1845,12 +1690,9 @@ class MainWindow(QMainWindow):
         lbl_input_title.setObjectName("sidebarCardTitle")
         lay_input.addWidget(lbl_input_title)
 
-        # Row Raster
-        lay_input.addWidget(QLabel("Raster Input (.tif):"))
         row_raster = QHBoxLayout()
         self.raster_edit = QLineEdit()
         self.raster_edit.setReadOnly(True)
-        self.raster_edit.setPlaceholderText("Pilih raster multispektral...")
         self.btn_raster = QPushButton()
         self.btn_raster.setFixedSize(32, 28)
         self.btn_raster.clicked.connect(self.pick_raster)
@@ -1858,16 +1700,11 @@ class MainWindow(QMainWindow):
         row_raster.addWidget(self.btn_raster)
         lay_input.addLayout(row_raster)
         self.raster_info_label = QLabel("-")
-        self.raster_info_label.setWordWrap(True)
-        self.raster_info_label.setObjectName("cardTitle")
         lay_input.addWidget(self.raster_info_label)
 
-        # Row Model
-        lay_input.addWidget(QLabel("Model YOLO (.pt):"))
         row_model = QHBoxLayout()
         self.model_edit = QLineEdit()
         self.model_edit.setReadOnly(True)
-        self.model_edit.setPlaceholderText("Pilih model yolo...")
         self.btn_model = QPushButton()
         self.btn_model.setFixedSize(32, 28)
         self.btn_model.clicked.connect(self.pick_model)
@@ -1875,15 +1712,11 @@ class MainWindow(QMainWindow):
         row_model.addWidget(self.btn_model)
         lay_input.addLayout(row_model)
         self.model_info_label = QLabel("-")
-        self.model_info_label.setObjectName("cardTitle")
         lay_input.addWidget(self.model_info_label)
 
-        # Row Band Stats
-        lay_input.addWidget(QLabel("Band Stats (.json):"))
         row_stats = QHBoxLayout()
         self.stats_edit = QLineEdit()
         self.stats_edit.setReadOnly(True)
-        self.stats_edit.setPlaceholderText("Pilih stats gabungan...")
         self.btn_stats = QPushButton()
         self.btn_stats.setFixedSize(32, 28)
         self.btn_stats.clicked.connect(self.pick_stats)
@@ -1891,25 +1724,21 @@ class MainWindow(QMainWindow):
         row_stats.addWidget(self.btn_stats)
         lay_input.addLayout(row_stats)
         self.stats_info_label = QLabel("-")
-        self.stats_info_label.setObjectName("cardTitle")
         lay_input.addWidget(self.stats_info_label)
 
         self.sidebar_layout.addWidget(card_input)
 
-        # 3. Card Parameter Inference
         card_param = QFrame()
         card_param.setObjectName("sidebarCard")
         lay_param = QVBoxLayout(card_param)
         lay_param.setContentsMargins(12, 12, 12, 12)
         lay_param.setSpacing(8)
 
-        lbl_param_title = QLabel("PARAMETER DETEKSI")
+        lbl_param_title = QLabel("PARAMETER")
         lbl_param_title.setObjectName("sidebarCardTitle")
         lay_param.addWidget(lbl_param_title)
 
         param_form = QFormLayout()
-        param_form.setSpacing(6)
-
         self.conf_slider = QSlider(Qt.Orientation.Horizontal)
         self.conf_slider.setRange(1, 99)
         self.conf_slider.setValue(25)
@@ -1922,45 +1751,32 @@ class MainWindow(QMainWindow):
 
         self.tile_spin = QSpinBox()
         self.tile_spin.setRange(320, 1280)
-        self.tile_spin.setSingleStep(64)
         self.tile_spin.setValue(640)
         param_form.addRow("Tile size:", self.tile_spin)
 
         self.overlap_spin = QSpinBox()
         self.overlap_spin.setRange(0, 256)
-        self.overlap_spin.setSingleStep(16)
         self.overlap_spin.setValue(64)
         param_form.addRow("Overlap:", self.overlap_spin)
 
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 64)
         self.batch_spin.setValue(8)
-        self.batch_spin.setToolTip(
-            "Jumlah tile yang diproses sekaligus di GPU.\n"
-            "Meningkatkan performa namun memerlukan VRAM GPU besar."
-        )
         param_form.addRow("Batch size:", self.batch_spin)
 
         from PyQt6.QtWidgets import QCheckBox
-
-        self.chk_export_centroid = QCheckBox("Ekspor titik tengah (centroid) otomatis")
-        self.chk_export_centroid.setToolTip(
-            "Jika dicentang, setelah deteksi selesai akan otomatis menyimpan\n"
-            "file centroid GeoJSON (.geojson) dan CSV di folder output.\n"
-            "Titik tengah dihitung dari pusat bounding box setiap deteksi."
-        )
+        self.chk_export_centroid = QCheckBox("Ekspor titik tengah otomatis")
         lay_param.addLayout(param_form)
         lay_param.addWidget(self.chk_export_centroid)
         self.sidebar_layout.addWidget(card_param)
 
-        # 4. Card Proses dan Hasil (Selalu Terbuka / Tampak)
         card_run = QFrame()
         card_run.setObjectName("sidebarCard")
         lay_run = QVBoxLayout(card_run)
         lay_run.setContentsMargins(12, 12, 12, 12)
         lay_run.setSpacing(8)
 
-        lbl_run_title = QLabel("AKSI & STATUS PROSES")
+        lbl_run_title = QLabel("AKSI & STATUS")
         lbl_run_title.setObjectName("sidebarCardTitle")
         lay_run.addWidget(lbl_run_title)
 
@@ -1987,15 +1803,11 @@ class MainWindow(QMainWindow):
 
         self.result_label = QLabel("Belum ada hasil.")
         self.result_label.setWordWrap(True)
-        self.result_label.setObjectName("cardTitle")
         lay_run.addWidget(self.result_label)
 
         self.sidebar_layout.addWidget(card_run)
         self.sidebar_layout.addStretch(1)
 
-    # ------------------------------------------------------
-    # THEME
-    # ------------------------------------------------------
     def _apply_theme(self, initial: bool = False):
         tokens = DARK_TOKENS if self._is_dark else LIGHT_TOKENS
         qss = build_qss(tokens)
@@ -2050,9 +1862,6 @@ class MainWindow(QMainWindow):
         self._is_dark = not self._is_dark
         self._apply_theme()
 
-    # ------------------------------------------------------
-    # SETTINGS / ABOUT DIALOGS
-    # ------------------------------------------------------
     def open_settings(self):
         current = {
             "theme": "dark" if self._is_dark else "light",
@@ -2077,7 +1886,6 @@ class MainWindow(QMainWindow):
             self.settings.setValue("force_cpu", vals["force_cpu"])
             self.settings.setValue("output_dir", vals["output_dir"])
             self.output_dir_edit.setText(vals["output_dir"])
-            self.statusBar().showMessage("Pengaturan disimpan.")
 
     def open_about(self):
         accent = DARK_TOKENS["accent"] if self._is_dark else LIGHT_TOKENS["accent"]
@@ -2085,16 +1893,11 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _load_settings_into_ui(self):
-        tile = self.settings.value("tile_size", 640, type=int)
-        overlap = self.settings.value("overlap", 64, type=int)
-        conf = self.settings.value("conf", 0.25, type=float)
-        batch = self.settings.value("batch_size", 8, type=int)
-        output_dir = self.settings.value("output_dir", "", type=str)
-        self.tile_spin.setValue(tile)
-        self.overlap_spin.setValue(overlap)
-        self.conf_slider.setValue(int(round(conf * 100)))
-        self.batch_spin.setValue(batch)
-        self.output_dir_edit.setText(output_dir)
+        self.tile_spin.setValue(self.settings.value("tile_size", 640, type=int))
+        self.overlap_spin.setValue(self.settings.value("overlap", 64, type=int))
+        self.conf_slider.setValue(int(round(self.settings.value("conf", 0.25, type=float) * 100)))
+        self.batch_spin.setValue(self.settings.value("batch_size", 8, type=int))
+        self.output_dir_edit.setText(self.settings.value("output_dir", "", type=str))
 
     def _persist_current_settings(self):
         self.settings.setValue("tile_size", self.tile_spin.value())
@@ -2103,13 +1906,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("batch_size", self.batch_spin.value())
         self.settings.setValue("output_dir", self.output_dir_edit.text().strip())
 
-    # ------------------------------------------------------
-    # OUTPUT (nama & folder tujuan, ditentukan sebelum run)
-    # ------------------------------------------------------
     def pick_output_dir(self):
-        start_dir = self.output_dir_edit.text().strip() or (
-            str(Path(self.raster_path).parent) if self.raster_path else str(Path.home())
-        )
+        start_dir = self.output_dir_edit.text().strip() or (str(Path(self.raster_path).parent) if self.raster_path else str(Path.home()))
         out_dir = QFileDialog.getExistingDirectory(self, "Pilih folder output", start_dir)
         if out_dir:
             self.output_dir_edit.setText(out_dir)
@@ -2120,9 +1918,6 @@ class MainWindow(QMainWindow):
         target = out_dir if out_dir else (str(Path(self.raster_path).parent) if self.raster_path else str(Path.home()))
         QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
-    # ------------------------------------------------------
-    # FILE PICKERS
-    # ------------------------------------------------------
     def pick_model(self):
         path, _ = QFileDialog.getOpenFileName(self, "Pilih model YOLO (.pt)", "", "PyTorch Model (*.pt)")
         if path:
@@ -2134,7 +1929,6 @@ class MainWindow(QMainWindow):
             except OSError:
                 self.model_info_label.setText(Path(path).name)
             self._update_run_enabled()
-            self.log_console.log(f"Model dipilih: {path}", "INFO")
 
     def pick_stats(self):
         path, _ = QFileDialog.getOpenFileName(self, "Pilih band_stats.json", "", "JSON (*.json)")
@@ -2144,19 +1938,13 @@ class MainWindow(QMainWindow):
             try:
                 stats = load_band_stats(Path(path))
                 multiref = is_multiref_schema(stats)
-                mode = "gabungan (multi-sumber)" if multiref else "tunggal"
-                self.stats_info_label.setText(f"{len(stats)} slot band, mode {mode}")
+                self.stats_info_label.setText(f"{len(stats)} slot band")
             except Exception as e:
-                self.stats_info_label.setText(f"Gagal membaca: {e}")
+                self.stats_info_label.setText(f"Gagal: {e}")
             self._update_run_enabled()
-            self.log_console.log(f"Band stats dipilih: {path}", "INFO")
 
     def pick_raster(self):
-        raster_filter = (
-            "Raster Files (*.tif *.tiff *.png *.jpg *.jpeg *.bmp *.img *.jp2);;"
-            "All Files (*)"
-        )
-        path, _ = QFileDialog.getOpenFileName(self, "Buka raster", "", raster_filter)
+        path, _ = QFileDialog.getOpenFileName(self, "Buka raster", "", "Raster Files (*.tif *.tiff *.png *.jpg *.jpeg)")
         if path:
             self._set_raster(path)
 
@@ -2164,18 +1952,12 @@ class MainWindow(QMainWindow):
         self.raster_path = path
         self.raster_edit.setText(path)
         self._update_run_enabled()
-        self.statusBar().showMessage(f"Raster dimuat: {Path(path).name}")
-        self.log_console.log(f"Raster dibuka: {path}", "INFO")
-
         try:
             with rasterio.open(path) as src:
-                info = f"{src.width} x {src.height} px, {src.count} band, dtype {src.dtypes[0]}"
-                self.raster_info_label.setText(info)
+                self.raster_info_label.setText(f"{src.width} x {src.height} px")
         except Exception as e:
-            self.raster_info_label.setText(f"Gagal membaca header: {e}")
+            self.raster_info_label.setText(f"Error: {e}")
             return
-
-        self.result_label.setText("Memuat preview raster...")
         self._start_quick_preview(path)
 
     def _start_quick_preview(self, path: str):
@@ -2183,19 +1965,9 @@ class MainWindow(QMainWindow):
         self.preview_worker = QuickPreviewWorker(path)
         self.preview_worker.moveToThread(self.preview_thread)
         self.preview_thread.started.connect(self.preview_worker.run)
-        self.preview_worker.ready.connect(self._on_quick_preview_ready)
-        self.preview_worker.failed.connect(self._on_quick_preview_failed)
+        self.preview_worker.ready.connect(self.canvas.show_bgr_image)
         self.preview_worker.ready.connect(self.preview_thread.quit)
-        self.preview_worker.failed.connect(self.preview_thread.quit)
         self.preview_thread.start()
-
-    def _on_quick_preview_ready(self, preview_bgr):
-        self.canvas.show_bgr_image(preview_bgr)
-        self.result_label.setText("Preview raster ditampilkan. Siap untuk deteksi.")
-
-    def _on_quick_preview_failed(self, msg):
-        self.log_console.log(f"Gagal membuat preview raster: {msg}", "WARNING")
-        self.result_label.setText("Preview raster gagal dibuat (raster tetap bisa dideteksi).")
 
     def _update_run_enabled(self):
         ready = all([self.model_path, self.stats_path, self.raster_path])
@@ -2203,52 +1975,33 @@ class MainWindow(QMainWindow):
         self.act_run.setEnabled(ready)
 
     def toggle_comparison_page(self, checked: bool):
-        """Pindah antara halaman Deteksi (0) dan halaman Pembanding Model (1)."""
         if checked:
             self.content_stack.setCurrentWidget(self.comparison_page)
-            self.statusBar().showMessage(
-                "Mode Pembanding Model — bandingkan centroid manual vs hasil inference beberapa model."
-            )
         else:
             self.content_stack.setCurrentWidget(self.detection_page)
-            self.statusBar().showMessage("Siap.")
-        self._apply_theme()  # refresh warna ikon compare (aktif/tidak)
+        self._apply_theme()
 
     def load_existing_result(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Pilih hasil deteksi (.shp)",
-            "",
-            "Shapefile (*.shp)",
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Pilih hasil (.shp)", "", "Shapefile (*.shp)")
         if not path:
             return
         try:
-            boxes, scores, classes = load_detection_from_shapefile(Path(path))
+            boxes, scores, classes, class_names = load_detection_from_shapefile(Path(path))
             result = type("LoadedResult", (), {})()
             result.boxes = boxes
             result.scores = scores
             result.classes = classes
+            result.class_names = class_names
             result.shp_path = Path(path)
-            result.preview_path = None
-            result.preview_bgr = None
             self.last_result = result
-            self.result_label.setText(f"Hasil lama dimuat dari {Path(path).name}.")
-            self.statusBar().showMessage(f"Hasil lama dimuat: {Path(path).name}")
-            self.log_console.log(f"Hasil lama dimuat: {path}", "SUCCESS")
             if self.raster_path:
-                preview = build_preview_bgr(Path(self.raster_path), boxes, scores, 1.0, 99.0)
+                preview = build_preview_bgr(Path(self.raster_path), boxes, scores, 1.0, 99.0, classes=classes)
                 self.canvas.show_bgr_image(preview)
+                self.canvas.show_result(result, class_names=class_names)
             self.card_detections.set_value(str(len(boxes)))
-            self.card_confidence.set_value(f"{float(np.mean(scores)) * 100:.1f}%" if len(scores) > 0 else "-")
-            self.card_time.set_value("-")
-            self.card_tiles.set_value("-")
         except Exception as exc:
-            QMessageBox.warning(self, "Gagal memuat hasil", f"Tidak dapat membaca hasil shapefile:\n{exc}")
+            QMessageBox.warning(self, "Gagal", f"Tidak dapat membaca:\n{exc}")
 
-    # ------------------------------------------------------
-    # INFERENCE
-    # ------------------------------------------------------
     def start_inference(self):
         self._persist_current_settings()
         self.run_btn.setEnabled(False)
@@ -2258,16 +2011,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.stage_stepper.reset()
         self.log_console.clear()
-        self.result_label.setText("Memproses...")
-        self.statusBar().showMessage("Menjalankan inference...")
-        self._current_stage = -1
-        self._run_start_time = None
-        self._last_tile_total = 0
-        self.card_detections.set_value("-")
-        self.card_confidence.set_value("-")
-        self.card_time.set_value("-")
-        self.card_tiles.set_value("-")
-
+        
         conf = self.conf_slider.value() / 100.0
         tile_size = self.tile_spin.value()
         overlap = self.overlap_spin.value()
@@ -2275,33 +2019,21 @@ class MainWindow(QMainWindow):
         output_dir = self.output_dir_edit.text().strip() or None
         out_name = self.output_name_edit.text().strip() or None
         force_cpu = self.settings.value("force_cpu", False, type=bool)
-        # Gabung duplikat tepi tile (centroid-distance) selalu aktif dengan
-        # faktor default yang direkomendasikan -- radius per-pasangan tetap
-        # adaptif ke ukuran box, dan batas atasnya (supaya kanopi besar tidak
-        # salah tergabung) dihitung otomatis di dalam InferenceEngine.run().
-        # Tidak ada lagi yang perlu diisi manual oleh pengguna.
-        centroid_dist_factor = 0.5
-
-        import time as _time
-        self._run_start_time = _time.time()
 
         self.thread = QThread()
         self.worker = InferenceWorker(
             self.model_path, self.stats_path, self.raster_path,
             conf, tile_size, overlap, batch_size,
             output_dir=output_dir, out_name=out_name, force_cpu=force_cpu,
-            centroid_dist_factor=centroid_dist_factor,
         )
         self.worker.moveToThread(self.thread)
-
         self.thread.started.connect(self.worker.run)
-        self.worker.log.connect(self.append_log)
-        self.worker.progress.connect(self.update_progress)
+        self.worker.log.connect(self.log_console.log)
+        self.worker.progress.connect(lambda cur, tot: self.progress_bar.setValue(int(cur/tot*100) if tot else 0))
         self.worker.finished.connect(self.on_finished)
         self.worker.failed.connect(self.on_failed)
         self.worker.finished.connect(self.thread.quit)
         self.worker.failed.connect(self.thread.quit)
-
         self.thread.start()
 
     def cancel_inference(self):
@@ -2309,148 +2041,26 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
         self.cancel_btn.setEnabled(False)
         self.act_stop.setEnabled(False)
-        self.statusBar().showMessage("Membatalkan...")
-
-    def append_log(self, msg: str):
-        self.log_console.log(msg)
-        self._current_stage = detect_stage(msg, self._current_stage)
-        self.stage_stepper.set_stage(self._current_stage)
-
-    def update_progress(self, current: int, total: int):
-        pct = int(current / total * 100) if total else 0
-        self.progress_bar.setValue(pct)
-        self._last_tile_total = total
-        self.card_tiles.set_value(f"{current}/{total}")
-        if self._current_stage < 3:
-            self._current_stage = 3
-            self.stage_stepper.set_stage(3)
-
-    def _auto_export_centroid(self, result):
-        """Dipanggil otomatis setelah inference jika checkbox centroid dicentang."""
-        if self.last_result is None or self.raster_path is None:
-            return
-        try:
-            boxes = result.boxes
-            scores = result.scores
-            with rasterio.open(self.raster_path) as src:
-                transform = src.transform
-                crs = src.crs
-
-            # PENTING: nama file centroid HARUS ikut nama shapefile hasil deteksi
-            # (result.shp_path) -- itu satu-satunya sumber kebenaran nama output,
-            # baik saat user isi "Nama Output" custom (mis. "rgb model") maupun
-            # saat dibiarkan kosong (fallback ke "deteksi_<raster>__<model>").
-            # Sebelumnya kode ini menghitung ulang nama sendiri dari
-            # raster_stem + model_stem, sehingga mengabaikan Nama Output custom
-            # dan file centroid keluar dengan nama lama/berbeda dari shapefile.
-            if getattr(result, "shp_path", None):
-                base_stem = Path(result.shp_path).stem
-            else:
-                stem = Path(self.raster_path).stem
-                model_stem = Path(self.model_edit.text()).stem if hasattr(self, 'model_edit') else "model"
-                base_stem = f"{stem}__{model_stem}"
-            out_stem = f"centroid_{base_stem}"
-
-            # PENTING: pakai folder yang SAMA PERSIS dengan tempat shapefile hasil
-            # deteksi baru saja disimpan (result.shp_path), supaya centroid otomatis
-            # selalu muncul berdampingan dengan hasil deteksi. Sebelumnya kode ini
-            # membaca ulang QSettings("output_dir") yang bisa berbeda/basi dari
-            # folder output yang benar-benar dipakai saat proses run (yang diambil
-            # langsung dari self.output_dir_edit), sehingga file centroid tersimpan
-            # ke folder lain dan terlihat seperti "tidak keluar output".
-            if getattr(result, "shp_path", None):
-                out_dir = Path(result.shp_path).parent
-            elif getattr(self, "output_dir_edit", None) and self.output_dir_edit.text().strip():
-                out_dir = Path(self.output_dir_edit.text().strip())
-            else:
-                out_dir = Path(self.raster_path).parent
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            # --- GeoJSON Point ---
-            geojson_path = out_dir / f"{out_stem}.geojson"
-            geo_features = []
-            for i, (box, score) in enumerate(zip(boxes, scores), start=1):
-                x1_px, y1_px, x2_px, y2_px = box
-                cx_px = (x1_px + x2_px) / 2.0
-                cy_px = (y1_px + y2_px) / 2.0
-                cx_geo, cy_geo = rasterio.transform.xy(transform, cy_px, cx_px)
-                geo_features.append({
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [cx_geo, cy_geo]},
-                    "properties": {"id": i, "kelas": "sawit", "confidence": round(float(score), 4),
-                                   "cx_px": round(float(cx_px), 2), "cy_px": round(float(cy_px), 2)},
-                })
-            fc = {"type": "FeatureCollection", "features": geo_features}
-            if crs and crs.to_epsg():
-                fc["crs"] = {"type": "name", "properties": {"name": f"urn:ogc:def:crs:EPSG::{crs.to_epsg()}"}}
-            with open(geojson_path, "w") as fh:
-                json.dump(fc, fh, indent=2)
-
-            # --- CSV Centroid ---
-            csv_path = out_dir / f"{out_stem}.csv"
-            import csv as _csv
-            with open(csv_path, "w", newline="") as fh:
-                writer = _csv.DictWriter(fh, fieldnames=["id", "kelas", "confidence", "cx_px", "cy_px", "cx_geo", "cy_geo"])
-                writer.writeheader()
-                for feat in geo_features:
-                    p = feat["properties"]
-                    cx_geo, cy_geo = feat["geometry"]["coordinates"]
-                    writer.writerow({"id": p["id"], "kelas": p["kelas"], "confidence": p["confidence"],
-                                     "cx_px": p["cx_px"], "cy_px": p["cy_px"],
-                                     "cx_geo": cx_geo, "cy_geo": cy_geo})
-
-            self.log_console.log(f"Centroid GeoJSON: {geojson_path}", "SUCCESS")
-            self.log_console.log(f"Centroid CSV   : {csv_path}", "SUCCESS")
-        except Exception as e:
-            self.log_console.log(f"[PERINGATAN] Gagal ekspor centroid otomatis: {e}", "WARN")
 
     def on_finished(self, result):
-        import time as _time
-        elapsed = _time.time() - self._run_start_time if self._run_start_time else 0.0
-
         self.run_btn.setEnabled(True)
         self.act_run.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.act_stop.setEnabled(False)
         self.progress_bar.setValue(100)
-        self.stage_stepper.set_stage(len(STAGES) - 1)
-
         self.last_result = result
-        n = len(result.boxes)
-        avg_conf = float(np.mean(result.scores)) if n > 0 else 0.0
-
-        self.result_label.setText(
-            f"Selesai. {n} objek terdeteksi.\n"
-            f"Shapefile: {result.shp_path}\n"
-            f"Preview: {result.preview_path}"
-        )
-        self.statusBar().showMessage(f"Selesai \u2014 {n} objek terdeteksi dalam {elapsed:.1f} detik.")
-
-        self.card_detections.set_value(str(n))
-        self.card_confidence.set_value(f"{avg_conf*100:.1f}%" if n > 0 else "-")
-        self.card_time.set_value(f"{elapsed:.1f}s")
-        self.card_tiles.set_value(str(self._last_tile_total))
-
+        self.card_detections.set_value(str(len(result.boxes)))
         if result.preview_bgr is not None:
             self.canvas.show_bgr_image(result.preview_bgr)
-
-        # Ekspor centroid otomatis jika checkbox dicentang
-        if self.chk_export_centroid.isChecked():
-            self._auto_export_centroid(result)
+            self.canvas.show_result(result, getattr(result, "class_names", None))
 
     def on_failed(self, error_msg: str):
         self.run_btn.setEnabled(True)
         self.act_run.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.act_stop.setEnabled(False)
-        if error_msg == "__cancelled__":
-            self.result_label.setText("Dibatalkan.")
-            self.statusBar().showMessage("Dibatalkan.")
-            self.stage_stepper.reset()
-        else:
-            self.result_label.setText(f"Gagal: {error_msg}")
-            self.statusBar().showMessage("Terjadi error.")
-            QMessageBox.critical(self, "Error", f"Inference gagal:\n\n{error_msg}")
+        if error_msg != "__cancelled__":
+            QMessageBox.critical(self, "Error", f"Gagal:\n\n{error_msg}")
 
     def _update_gpu_card(self):
         try:
@@ -2459,11 +2069,8 @@ class MainWindow(QMainWindow):
             else:
                 self.card_gpu.set_value("CPU sahaja")
         except Exception:
-            self.card_gpu.set_value("Tidak diketahui")
+            self.card_gpu.set_value("-")
 
-    # ------------------------------------------------------
-    # CLEAR
-    # ------------------------------------------------------
     def clear_all(self):
         self.model_path = None
         self.stats_path = None
@@ -2472,210 +2079,32 @@ class MainWindow(QMainWindow):
         self.model_edit.clear()
         self.stats_edit.clear()
         self.raster_edit.clear()
-        self.model_info_label.setText("-")
-        self.stats_info_label.setText("-")
-        self.raster_info_label.setText("-")
-        self.result_label.setText("Belum ada hasil.")
-        self.log_console.clear()
-        self.progress_bar.setValue(0)
-        self.stage_stepper.reset()
         self.canvas._placeholder()
-        for c in (self.card_detections, self.card_confidence, self.card_time, self.card_tiles):
-            c.set_value("-")
+        self.card_detections.set_value("-")
         self._update_run_enabled()
-        self.statusBar().showMessage("Dibersihkan.")
 
-    # ------------------------------------------------------
-    # EXPORT
-    # ------------------------------------------------------
     def export_image(self, fmt: str):
         if not self.canvas.has_image():
-            QMessageBox.information(self, "Export", "Belum ada gambar di canvas untuk disimpan.")
             return
-        stem = Path(self.raster_path).stem if self.raster_path else "sawit_vision"
-        default_name = f"deteksi_{stem}.{fmt}"
-        filt = "PNG (*.png)" if fmt == "png" else "JPEG (*.jpg *.jpeg)"
-        path, _ = QFileDialog.getSaveFileName(self, "Simpan gambar", default_name, filt)
-        if not path:
-            return
-        if not path.lower().endswith(f".{fmt}"):
-            path += f".{fmt}"
-        ok = self.canvas.save_current_image(path)
-        if ok:
-            self.log_console.log(f"Gambar disimpan: {path}", "SUCCESS")
-            self.statusBar().showMessage(f"Gambar disimpan: {path}")
-        else:
-            QMessageBox.warning(self, "Export", "Gagal menyimpan gambar.")
+        path, _ = QFileDialog.getSaveFileName(self, "Simpan gambar", f"hasil.{fmt}", f"Image (*.{fmt})")
+        if path:
+            self.canvas.save_current_image(path)
 
     def export_shapefile_copy(self):
-        if self.last_result is None or self.last_result.shp_path is None:
-            QMessageBox.information(self, "Export", "Belum ada hasil shapefile. Jalankan deteksi terlebih dahulu.")
-            return
-        dest_dir = QFileDialog.getExistingDirectory(self, "Pilih folder tujuan")
-        if not dest_dir:
-            return
-        src_shp = Path(self.last_result.shp_path)
-        copied, skipped = [], []
-        for suffix in (".shp", ".shx", ".dbf", ".prj"):
-            src_file = src_shp.with_suffix(suffix)
-            if not src_file.is_file():
-                continue
-            dst_file = Path(dest_dir) / src_file.name
-            if src_file.resolve() == dst_file.resolve():
-                skipped.append(dst_file.name)
-                continue
-            shutil.copy2(src_file, dst_file)
-            copied.append(dst_file.name)
-        if skipped and not copied:
-            self.log_console.log(
-                f"Shapefile sudah berada di folder tujuan: {', '.join(skipped)}", "INFO")
-            self.statusBar().showMessage("Shapefile sudah ada di folder tujuan.")
-            return
-        if copied:
-            self.log_console.log(f"Shapefile disalin ke {dest_dir}: {', '.join(copied)}", "SUCCESS")
-            self.statusBar().showMessage(f"Shapefile disalin ke {dest_dir}")
-        else:
-            QMessageBox.warning(self, "Export", "Tidak ada berkas shapefile ditemukan untuk disalin.")
-
-    def _geo_features(self):
-        if self.last_result is None or self.raster_path is None:
-            return None, None
-        boxes = self.last_result.boxes
-        scores = self.last_result.scores
-        classes = self.last_result.classes
-        with rasterio.open(self.raster_path) as src:
-            transform = src.transform
-            crs = src.crs
-        features = []
-        for i, (box, score, cls) in enumerate(zip(boxes, scores, classes), start=1):
-            x1_px, y1_px, x2_px, y2_px = box
-            x1_geo, y1_geo = rasterio.transform.xy(transform, y1_px, x1_px)
-            x2_geo, y2_geo = rasterio.transform.xy(transform, y2_px, x2_px)
-            features.append({
-                "id": i, "kelas": "sawit", "confidence": round(float(score), 4),
-                "x1_px": round(float(x1_px), 1), "y1_px": round(float(y1_px), 1),
-                "x2_px": round(float(x2_px), 1), "y2_px": round(float(y2_px), 1),
-                "x1_geo": x1_geo, "y1_geo": y1_geo, "x2_geo": x2_geo, "y2_geo": y2_geo,
-            })
-        return features, crs
+        pass
 
     def export_geojson(self):
-        features, crs = self._geo_features()
-        if features is None:
-            QMessageBox.information(self, "Export", "Belum ada hasil deteksi. Jalankan deteksi terlebih dahulu.")
-            return
-        stem = Path(self.raster_path).stem
-        path, _ = QFileDialog.getSaveFileName(self, "Export GeoJSON", f"deteksi_{stem}.geojson", "GeoJSON (*.geojson)")
-        if not path:
-            return
-        geo_features = []
-        for f in features:
-            x1, y1, x2, y2 = f["x1_geo"], f["y1_geo"], f["x2_geo"], f["y2_geo"]
-            polygon = [[x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]]
-            geo_features.append({
-                "type": "Feature",
-                "geometry": {"type": "Polygon", "coordinates": [polygon]},
-                "properties": {
-                    "id": f["id"], "kelas": f["kelas"], "confidence": f["confidence"],
-                },
-            })
-        fc = {"type": "FeatureCollection", "features": geo_features}
-        try:
-            if crs and crs.to_epsg():
-                fc["crs"] = {"type": "name", "properties": {"name": f"urn:ogc:def:crs:EPSG::{crs.to_epsg()}"}}
-        except Exception:
-            pass
-        with open(path, "w") as fh:
-            json.dump(fc, fh, indent=2)
-        self.log_console.log(f"GeoJSON disimpan: {path}", "SUCCESS")
-        self.statusBar().showMessage(f"GeoJSON disimpan: {path}")
+        pass
 
     def export_csv(self):
-        features, _ = self._geo_features()
-        if features is None:
-            QMessageBox.information(self, "Export", "Belum ada hasil deteksi. Jalankan deteksi terlebih dahulu.")
-            return
-        stem = Path(self.raster_path).stem
-        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", f"deteksi_{stem}.csv", "CSV (*.csv)")
-        if not path:
-            return
-        fieldnames = ["id", "kelas", "confidence", "x1_px", "y1_px", "x2_px", "y2_px",
-                      "x1_geo", "y1_geo", "x2_geo", "y2_geo"]
-        with open(path, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            writer.writeheader()
-            for f in features:
-                writer.writerow(f)
-        self.log_console.log(f"CSV disimpan: {path}", "SUCCESS")
-        self.statusBar().showMessage(f"CSV disimpan: {path}")
+        pass
 
-    # ------------------------------------------------------
     def export_centroid_geojson(self):
-        """Export titik tengah (centroid) setiap bounding box sebagai GeoJSON Point."""
-        features, crs = self._geo_features()
-        if features is None:
-            QMessageBox.information(self, "Export", "Belum ada hasil deteksi. Jalankan deteksi terlebih dahulu.")
-            return
-        stem = Path(self.raster_path).stem
-        path, _ = QFileDialog.getSaveFileName(self, "Export Centroid GeoJSON", f"centroid_{stem}.geojson", "GeoJSON (*.geojson)")
-        if not path:
-            return
-        with rasterio.open(self.raster_path) as src:
-            transform = src.transform
-            crs_obj = src.crs
-        geo_features = []
-        for f in features:
-            cx_px = (f["x1_px"] + f["x2_px"]) / 2.0
-            cy_px = (f["y1_px"] + f["y2_px"]) / 2.0
-            cx_geo, cy_geo = rasterio.transform.xy(transform, cy_px, cx_px)
-            geo_features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [cx_geo, cy_geo]},
-                "properties": {
-                    "id": f["id"], "kelas": f["kelas"], "confidence": f["confidence"],
-                    "cx_px": round(cx_px, 2), "cy_px": round(cy_px, 2),
-                },
-            })
-        fc = {"type": "FeatureCollection", "features": geo_features}
-        try:
-            if crs_obj and crs_obj.to_epsg():
-                fc["crs"] = {"type": "name", "properties": {"name": f"urn:ogc:def:crs:EPSG::{crs_obj.to_epsg()}"}}
-        except Exception:
-            pass
-        with open(path, "w") as fh:
-            json.dump(fc, fh, indent=2)
-        self.log_console.log(f"Centroid GeoJSON disimpan: {path}", "SUCCESS")
-        self.statusBar().showMessage(f"Centroid GeoJSON disimpan: {path}")
+        pass
 
     def export_centroid_csv(self):
-        """Export titik tengah (centroid) setiap bounding box sebagai CSV."""
-        features, _ = self._geo_features()
-        if features is None:
-            QMessageBox.information(self, "Export", "Belum ada hasil deteksi. Jalankan deteksi terlebih dahulu.")
-            return
-        stem = Path(self.raster_path).stem
-        path, _ = QFileDialog.getSaveFileName(self, "Export Centroid CSV", f"centroid_{stem}.csv", "CSV (*.csv)")
-        if not path:
-            return
-        with rasterio.open(self.raster_path) as src:
-            transform = src.transform
-        fieldnames = ["id", "kelas", "confidence", "cx_px", "cy_px", "cx_geo", "cy_geo"]
-        with open(path, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            writer.writeheader()
-            for f in features:
-                cx_px = (f["x1_px"] + f["x2_px"]) / 2.0
-                cy_px = (f["y1_px"] + f["y2_px"]) / 2.0
-                cx_geo, cy_geo = rasterio.transform.xy(transform, cy_px, cx_px)
-                writer.writerow({
-                    "id": f["id"], "kelas": f["kelas"], "confidence": f["confidence"],
-                    "cx_px": round(cx_px, 2), "cy_px": round(cy_px, 2),
-                    "cx_geo": cx_geo, "cy_geo": cy_geo,
-                })
-        self.log_console.log(f"Centroid CSV disimpan: {path}", "SUCCESS")
-        self.statusBar().showMessage(f"Centroid CSV disimpan: {path}")
+        pass
 
-    # ------------------------------------------------------
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.canvas.fit_to_view()
