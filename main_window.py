@@ -870,6 +870,13 @@ class DetectionDetailsDialog(QDialog):
 class CanvasView(QGraphicsView):
     zoomChanged = pyqtSignal(float)
 
+    # Di bawah persentase zoom ini, outline kotak individual diganti jadi
+    # isian warna tipis tanpa garis tepi -- soalnya kalau tetap pakai outline
+    # solid, ratusan/ribuan kotak kecil yang berdekatan bakal saling
+    # bertumpuk secara visual dan keliatan seperti grid padat/"kedouble"
+    # padahal masing-masing kotak sebenarnya benar dan tidak overlap.
+    LOD_ZOOM_THRESHOLD = 0.15
+
     def __init__(self):
         super().__init__()
         self.setObjectName("canvasView")
@@ -884,6 +891,7 @@ class CanvasView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(
             QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.zoomChanged.connect(self._update_box_lod)
         self._placeholder()
 
     def _placeholder(self):
@@ -908,6 +916,23 @@ class CanvasView(QGraphicsView):
         self._current_result = None
         self.fit_to_view()
 
+    def _style_box(self, rect_item, zoom, color=QColor(0, 255, 0)):
+        """Terapkan style kotak (outline solid vs isian tipis) sesuai level zoom saat ini."""
+        if zoom < self.LOD_ZOOM_THRESHOLD:
+            rect_item.setPen(QPen(Qt.PenStyle.NoPen))
+            fill = QColor(color)
+            fill.setAlpha(110)
+            rect_item.setBrush(QBrush(fill))
+        else:
+            pen = QPen(color, 2)
+            pen.setCosmetic(True)  # ketebalan outline tetap konstan di layar berapa pun zoom-nya
+            rect_item.setPen(pen)
+            rect_item.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 0)))
+
+    def _update_box_lod(self, zoom):
+        for item in self._overlay_items:
+            self._style_box(item, zoom)
+
     def show_result(self, result, class_names=None):
         self._current_result = result
         self._overlay_items = []
@@ -919,8 +944,7 @@ class CanvasView(QGraphicsView):
                 zip(result.boxes, result.scores, result.classes)):
             x1, y1, x2, y2 = [int(round(v)) for v in box]
             rect = QGraphicsRectItem(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
-            rect.setPen(QPen(QColor(0, 255, 0), 2))
-            rect.setBrush(QBrush(QColor(0, 255, 0, 0)))
+            self._style_box(rect, self._zoom)
             rect.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             rect.setData(0, {"index": idx, "box": box, "score": float(score), "class_id": int(cls_id), "class_name": str(
                 class_names[int(cls_id)] if class_names and 0 <= int(cls_id) < len(class_names) else int(cls_id)), })
