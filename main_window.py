@@ -780,7 +780,7 @@ class QuickPreviewWorker(QObject):
         try:
             empty_boxes = np.zeros((0, 4))
             empty_scores = np.zeros((0,))
-            preview = build_preview_bgr(
+            preview, _scale = build_preview_bgr(
                 Path(self.raster_path), empty_boxes, empty_scores,
                 stretch_lower_pct=1.0, stretch_upper_pct=99.0,
             )
@@ -933,7 +933,7 @@ class CanvasView(QGraphicsView):
         for item in self._overlay_items:
             self._style_box(item, zoom)
 
-    def show_result(self, result, class_names=None):
+    def show_result(self, result, class_names=None, scale=1.0):
         self._current_result = result
         self._overlay_items = []
         if self.pixmap_item is None:
@@ -942,10 +942,18 @@ class CanvasView(QGraphicsView):
             return
         for idx, (box, score, cls_id) in enumerate(
                 zip(result.boxes, result.scores, result.classes)):
-            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            # 'box' dalam koordinat piksel resolusi ASLI raster. Tapi pixmap
+            # yang ditampilkan (preview_bgr) adalah versi DOWNSAMPLE (lihat
+            # build_preview_bgr, scale < 1.0 untuk raster > max_dim) --
+            # tanpa dikali 'scale' di sini, kotak akan tergambar jauh lebih
+            # besar dan meleset keluar dari batas gambar preview.
+            x1, y1, x2, y2 = [int(round(v * scale)) for v in box]
             rect = QGraphicsRectItem(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
             self._style_box(rect, self._zoom)
             rect.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            # 'box' yang disimpan di data TETAP koordinat asli (unscaled),
+            # supaya detail dialog & referensi lain tetap akurat ke piksel
+            # raster sebenarnya, bukan ke piksel preview yang di-downsample.
             rect.setData(0, {"index": idx, "box": box, "score": float(score), "class_id": int(cls_id), "class_name": str(
                 class_names[int(cls_id)] if class_names and 0 <= int(cls_id) < len(class_names) else int(cls_id)), })
             self.scene_.addItem(rect)
@@ -2393,13 +2401,43 @@ class MainWindow(QMainWindow):
         self._start_quick_preview(path)
 
     def _start_quick_preview(self, path: str):
+        # Kalau ada preview thread lama yang MASIH JALAN, jangan langsung
+        # ditimpa -- itu yang bikin QThread lama jadi "yatim" dan di-GC
+        # selagi masih running (native crash Qt, force close tanpa
+        # traceback Python). Tunggu selesai dulu (biasanya <1 detik untuk
+        # quick preview) baru mulai yang baru.
+        # Dibungkus try/except: kalau thread lama SUDAH selesai dan sudah
+        # di-deleteLater oleh Qt, objek C++-nya sudah tidak ada lagi --
+        # akses isRunning() ke situ raise RuntimeError, bukan berarti masih
+        # jalan, jadi aman untuk dianggap "sudah tidak ada, lanjut saja".
+        old_thread = getattr(self, "preview_thread", None)
+        if old_thread is not None:
+            try:
+                if old_thread.isRunning():
+                    old_thread.quit()
+                    old_thread.wait(2000)
+            except RuntimeError:
+                pass  # objek C++ sudah di-deleteLater, anggap sudah beres
+
         self.preview_thread = QThread()
         self.preview_worker = QuickPreviewWorker(path)
         self.preview_worker.moveToThread(self.preview_thread)
         self.preview_thread.started.connect(self.preview_worker.run)
         self.preview_worker.ready.connect(self.canvas.show_bgr_image)
         self.preview_worker.ready.connect(self.preview_thread.quit)
+        # BARU: sinyal 'failed' sebelumnya tidak pernah di-connect -- kalau
+        # build_preview_bgr() gagal (raster corrupt/band kurang), thread
+        # tidak pernah di-quit dan jadi berpotensi jadi thread "yatim".
+        self.preview_worker.failed.connect(self._on_quick_preview_failed)
+        self.preview_worker.failed.connect(self.preview_thread.quit)
+        # Cleanup otomatis begitu thread selesai, baik sukses maupun gagal.
+        self.preview_thread.finished.connect(self.preview_worker.deleteLater)
+        self.preview_thread.finished.connect(self.preview_thread.deleteLater)
         self.preview_thread.start()
+
+    def _on_quick_preview_failed(self, error_message: str):
+        self.raster_info_label.setText(f"Gagal memuat preview: {error_message}")
+        self.statusBar().showMessage(f"Gagal memuat preview raster: {error_message}")
 
     def _update_run_enabled(self):
         ready = all([self.model_path, self.stats_path, self.raster_path])
@@ -2429,7 +2467,7 @@ class MainWindow(QMainWindow):
             result.shp_path = Path(path)
             self.last_result = result
             if self.raster_path:
-                preview = build_preview_bgr(
+                preview, scale = build_preview_bgr(
                     Path(
                         self.raster_path),
                     boxes,
@@ -2438,7 +2476,7 @@ class MainWindow(QMainWindow):
                     99.0,
                     classes=classes)
                 self.canvas.show_bgr_image(preview)
-                self.canvas.show_result(result, class_names=class_names)
+                self.canvas.show_result(result, class_names=class_names, scale=scale)
             self.card_detections.set_value(str(len(boxes)))
         except Exception as exc:
             QMessageBox.warning(self, "Gagal", f"Tidak dapat membaca:\n{exc}")
@@ -2499,13 +2537,14 @@ class MainWindow(QMainWindow):
             self.card_confidence.set_value(f"{float(np.mean(result.scores)) * 100:.1f}%")
         else:
             self.card_confidence.set_value("-")
-        self.card_time.set_value(f"{result.elapsed_seconds:.1f} s")
-        self.card_tiles.set_value(str(result.n_tiles))
+        self.card_time.set_value(f"{getattr(result, 'elapsed_seconds', 0.0):.1f} s")
+        self.card_tiles.set_value(str(getattr(result, 'n_tiles', '-')))
         if result.preview_bgr is not None:
             self.canvas.show_bgr_image(result.preview_bgr)
             self.canvas.show_result(
                 result, getattr(
-                    result, "class_names", None))
+                    result, "class_names", None),
+                scale=getattr(result, "preview_scale", 1.0))
 
     def on_failed(self, error_msg: str):
         self.run_btn.setEnabled(True)

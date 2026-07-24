@@ -31,6 +31,10 @@ class InferenceResult:
     shp_path: Path = None
     preview_path: Path = None
     preview_bgr: np.ndarray = None  # composite RGB + kotak, siap ditampilkan di canvas
+    elapsed_seconds: float = 0.0  # waktu total proses run(), buat Dashboard Card "Waktu Inference"
+    n_tiles: int = 0  # jumlah tile yang diproses, buat Dashboard Card "Jumlah Tile"
+    preview_scale: float = 1.0  # skala downsample preview_bgr vs resolusi asli raster;
+                                 # WAJIB dipakai saat gambar overlay kotak interaktif lain
 
 
 class CancelledError(Exception):
@@ -306,8 +310,15 @@ def auto_detect_band_mapping_multiref(src, band_stats: dict, log=print) -> dict:
 
 def build_preview_bgr(raster_path: Path, boxes: np.ndarray, scores: np.ndarray,
                        stretch_lower_pct: float, stretch_upper_pct: float,
-                       max_dim: int = 2000, classes: np.ndarray = None) -> np.ndarray:
-    """Composite RGB (band 1-3) dari raster asli + kotak deteksi. Return array BGR (bukan simpan file)."""
+                       max_dim: int = 2000, classes: np.ndarray = None):
+    """Composite RGB (band 1-3) dari raster asli + kotak deteksi.
+    Return (rgb_bgr, scale) -- 'scale' WAJIB dipakai oleh pemanggil untuk
+    menskalakan overlay kotak interaktif lain (mis. QGraphicsRectItem di
+    main_window.py), karena gambar yang dikembalikan di sini adalah versi
+    DOWNSAMPLE dari raster asli (bukan resolusi penuh) ketika raster lebih
+    besar dari max_dim. Tanpa scale ini, overlay lain yang masih pakai
+    koordinat piksel resolusi-penuh akan tergambar jauh lebih besar dan
+    meleset keluar dari batas gambar preview."""
     with rasterio.open(raster_path) as src:
         h_orig, w_orig = src.height, src.width
         scale = 1.0
@@ -346,21 +357,12 @@ def build_preview_bgr(raster_path: Path, boxes: np.ndarray, scores: np.ndarray,
         cls_id = int(classes[idx]) if classes is not None and len(classes) > idx else 0
         color = class_colors[cls_id % len(class_colors)]
         cv2.rectangle(rgb_bgr, (x1, y1), (x2, y2), color, 2)
-        
-        # Gambar background gelap untuk teks
-        label = f"{score:.2f}"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.4
-        thickness = 1
-        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-        
-        tx = x1
-        ty = max(y1 - 5, th)
-        
-        cv2.rectangle(rgb_bgr, (tx, ty - th - 2), (tx + tw + 2, ty + baseline), (0, 0, 0), -1)
-        cv2.putText(rgb_bgr, label, (tx + 1, ty - 1), font, font_scale, color, thickness, cv2.LINE_AA)
+        # Catatan: label confidence sengaja tidak digambar di preview ini
+        # (biar lebih bersih dilihat untuk raster dengan ribuan deteksi).
+        # Confidence tetap tersedia lewat klik kotak di canvas interaktif,
+        # serta tetap tercatat penuh di shapefile/CSV/Excel export.
 
-    return rgb_bgr
+    return rgb_bgr, scale
 
 
 def save_shapefile(raster_path: Path, boxes, scores, classes, out_shp: Path, model_name: str = "model_gabungan", class_names=None):
@@ -517,6 +519,9 @@ class InferenceEngine:
             pemanggil lain tapi TIDAK LAGI DIPAKAI oleh logic dedup yang baru.
             Boleh diisi apa saja, tidak berpengaruh ke hasil.
         """
+        import time
+        _t_start = time.perf_counter()
+
         if self.model is None:
             self.load()
 
@@ -633,8 +638,10 @@ class InferenceEngine:
                 self.progress_fn(idx, total)
 
         result = InferenceResult()
+        result.n_tiles = total
         if not all_boxes:
             self.log_fn("Tidak ada objek terdeteksi di seluruh raster.")
+            result.elapsed_seconds = time.perf_counter() - _t_start
             return result
 
         all_boxes = np.concatenate(all_boxes, axis=0)
@@ -690,7 +697,7 @@ class InferenceEngine:
         self.log_fn(f"Shapefile: {out_shp}")
 
         self.log_fn("Membuat preview visual...")
-        preview_bgr = build_preview_bgr(raster_path, final_boxes, final_scores,
+        preview_bgr, preview_scale = build_preview_bgr(raster_path, final_boxes, final_scores,
                                          self.STRETCH_LOWER_PCT, self.STRETCH_UPPER_PCT,
                                          classes=final_classes)
         out_img = out_dir / f"{out_stem}.jpg"
@@ -704,4 +711,6 @@ class InferenceEngine:
         result.shp_path = out_shp
         result.preview_path = out_img
         result.preview_bgr = preview_bgr
+        result.preview_scale = preview_scale
+        result.elapsed_seconds = time.perf_counter() - _t_start
         return result
