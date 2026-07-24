@@ -6,6 +6,7 @@ inference_multispectral_v2.py menjadi class yang bisa dipanggil dari GUI
 """
 
 import json
+import time
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -31,6 +32,8 @@ class InferenceResult:
     shp_path: Path = None
     preview_path: Path = None
     preview_bgr: np.ndarray = None  # composite RGB + kotak, siap ditampilkan di canvas
+    n_tiles: int = 0  # jumlah tile yang diproses -- buat card "Jumlah Tile"
+    elapsed_seconds: float = 0.0  # total waktu run() -- buat card "Waktu Inference"
 
 
 class CancelledError(Exception):
@@ -517,6 +520,8 @@ class InferenceEngine:
         if self.model is None:
             self.load()
 
+        _start_time = time.time()
+
         raster_path = Path(raster_path)
         if not raster_path.is_file():
             raise FileNotFoundError(f"Raster tidak ditemukan: {raster_path}")
@@ -535,7 +540,35 @@ class InferenceEngine:
             expected_n_bands = len(self.band_stats)
             multiref = is_multiref_schema(self.band_stats)
 
-            if n_bands == expected_n_bands and not multiref:
+            # --- SOLUSI DINAMIS UNTUK KAMERA BARU (JPG) ---
+            # Cuma jalan kalau modelnya GABUNGAN (multiref, skema band_stats
+            # punya "sources" per slot). Model RGB murni/simple (non-multiref)
+            # TIDAK punya key "sources" sama sekali di band_stats-nya --
+            # kalau cabang ini tetap dipaksa jalan untuk file .jpg apapun
+            # (termasuk saat modelnya simple), band_mapping bakal kosong dan
+            # fallback ke auto_detect_band_mapping_multiref() yang otomatis
+            # crash KeyError: 'sources' karena skema datanya beda.
+            if multiref and raster_path.suffix.lower() in ['.jpg', '.jpeg']:
+                self.log_fn("JPG Kamera Baru terdeteksi! Mencari rute RGB otomatis dari file JSON...")
+                
+                band_mapping = {}
+                input_band_idx = 1
+                
+                # Script akan menggeledah JSON untuk mencari slot milik sensor 3-band
+                for slot_str, data_slot in self.band_stats.items():
+                    if "sensor2_3band" in data_slot.get("sources", {}):
+                        band_mapping[int(slot_str)] = input_band_idx
+                        input_band_idx += 1
+                        if input_band_idx > 3:  # JPG maksimal 3 band
+                            break
+                
+                if len(band_mapping) > 0:
+                    self.log_fn(f"Rute RGB otomatis ditemukan: {band_mapping}")
+                else:
+                    self.log_fn("Peringatan: 'sensor2_3band' tidak ditemukan di JSON. Kembali ke mode adaptif...")
+                    band_mapping = auto_detect_band_mapping_multiref(src, self.band_stats, log=self.log_fn)
+            # ----------------------------------------------
+            elif n_bands == expected_n_bands and not multiref:
                 band_mapping = {b: b for b in range(1, expected_n_bands + 1)}
                 self.log_fn(f"Band lengkap ({n_bands}). Mapping 1-to-1.")
             elif multiref:
@@ -574,16 +607,20 @@ class InferenceEngine:
 
                     data = src.read(input_b_idx, window=window)
 
-                    if is_uint8_input:
+                    valid_pixels = data[data > 0]
+                    if len(valid_pixels) > (w * h * 0.05):
+                        p_low, p_high = np.percentile(valid_pixels, (self.STRETCH_LOWER_PCT, self.STRETCH_UPPER_PCT))
+                    elif fallback_p_low is not None and fallback_p_high is not None:
+                        p_low, p_high = fallback_p_low, fallback_p_high
+                    else:
+                        p_low, p_high = 0, 255
+                        
+                    # Analisis rentang kontras (Dynamic Range)
+                    dynamic_range = p_high - p_low
+                    
+                    if is_uint8_input and dynamic_range > 200:
                         stretched = data.astype(np.uint8)
                     else:
-                        valid_pixels = data[data > 0]
-                        if len(valid_pixels) > (w * h * 0.05):
-                            p_low, p_high = np.percentile(valid_pixels, (self.STRETCH_LOWER_PCT, self.STRETCH_UPPER_PCT))
-                        elif fallback_p_low is not None and fallback_p_high is not None:
-                            p_low, p_high = fallback_p_low, fallback_p_high
-                        else:
-                            p_low, p_high = 0, 255
                         stretched = stretch_band(data, p_low, p_high)
 
                     tile_chw[target_b - 1] = stretched
@@ -630,6 +667,8 @@ class InferenceEngine:
                 self.progress_fn(idx, total)
 
         result = InferenceResult()
+        result.n_tiles = total
+        result.elapsed_seconds = time.time() - _start_time
         if not all_boxes:
             self.log_fn("Tidak ada objek terdeteksi di seluruh raster.")
             return result
@@ -701,4 +740,6 @@ class InferenceEngine:
         result.shp_path = out_shp
         result.preview_path = out_img
         result.preview_bgr = preview_bgr
+        result.n_tiles = total
+        result.elapsed_seconds = time.time() - _start_time
         return result

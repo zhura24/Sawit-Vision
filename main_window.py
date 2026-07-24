@@ -579,11 +579,20 @@ QFrame#sidebarCard {
     border-radius: 6px;
 }
 QLabel#sidebarCardTitle {
+    background-color: transparent;
+    border: none;
     font-weight: bold;
     font-size: 11px;
     text-transform: uppercase;
     color: %(accent)s;
     letter-spacing: 0.5px;
+}
+QLabel#fieldLabel {
+    background-color: transparent;
+    border: none;
+    font-size: 11px;
+    font-weight: 600;
+    color: %(text_dim)s;
 }
 QPushButton {
     background-color: %(bg_card)s;
@@ -781,24 +790,81 @@ class QuickPreviewWorker(QObject):
 
 
 class DetectionDetailsDialog(QDialog):
-    def __init__(self, parent, title: str, details: list):
+    """Dialog detail bergaya kartu. Dipakai untuk 2 skenario:
+      1. Breakdown per-kelas saat dashboard card diklik (dikasih icon_name
+         biar konsisten sama ikon card asalnya).
+      2. Detail 1 bounding box saat area canvas diklik.
+
+    Sebelumnya cuma QTableWidget polos ukuran tetap 420x280 (rows dikit,
+    sisa areanya kosong melompong, header/grid default Qt yang gak
+    matching tema aplikasi) -- sekarang auto-size ke jumlah baris, ada
+    header ikon+judul warna aksen, baris key:value dipisah garis tipis
+    (bukan grid tabel penuh), dan tombol Tutup gaya sama seperti tombol
+    "Jalankan". Warna ngikutin tema dark/light yang lagi aktif di parent
+    window (fallback ke dark kalau parent gak punya info tema)."""
+
+    def __init__(self, parent, title: str, details: list,
+                 icon_name: str = "target", accent: str = None):
         super().__init__(parent)
+        is_dark = getattr(parent, "_is_dark", True)
+        tokens = DARK_TOKENS if is_dark else LIGHT_TOKENS
+        accent = accent or tokens["accent"]
+
         self.setWindowTitle(title)
-        self.resize(420, 280)
-        layout = QVBoxLayout(self)
-        table = QTableWidget(0, 2)
-        table.setHorizontalHeaderLabels(["Keterangan", "Nilai"])
-        table.verticalHeader().setVisible(False)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setColumnWidth(0, 140)
-        table.setRowCount(len(details))
-        for row, (label, value) in enumerate(details):
-            table.setItem(row, 0, QTableWidgetItem(str(label)))
-            table.setItem(row, 1, QTableWidgetItem(str(value)))
-        layout.addWidget(table)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
-        buttons.accepted.connect(self.accept)
-        layout.addWidget(buttons)
+        self.setMinimumWidth(380)
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {tokens['bg_elevated']}; }}
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 18, 22, 18)
+        outer.setSpacing(4)
+
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(Icons.pixmap(icon_name, accent, 24))
+        header.addWidget(icon_lbl)
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(
+            f"font-size: 15px; font-weight: 700; color: {accent}; background: transparent;")
+        header.addWidget(title_lbl, 1)
+        outer.addLayout(header)
+        outer.addSpacing(10)
+
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(f"background-color: {tokens['border']}; border: none;")
+        outer.addWidget(divider)
+
+        if not details:
+            details = [("Info", "Tidak ada data untuk ditampilkan.")]
+
+        for i, (label, value) in enumerate(details):
+            row_widget = QWidget()
+            row_widget.setStyleSheet("background: transparent;")
+            if i < len(details) - 1:
+                row_widget.setStyleSheet(
+                    f"background: transparent; border-bottom: 1px solid {tokens['border']};")
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 10, 0, 10)
+            lbl = QLabel(str(label))
+            lbl.setStyleSheet(f"color: {tokens['text_faint']}; font-size: 12px; background: transparent;")
+            val = QLabel(str(value))
+            val.setStyleSheet(f"color: {tokens['text']}; font-size: 13px; font-weight: 600; background: transparent;")
+            val.setAlignment(Qt.AlignmentFlag.AlignRight)
+            val.setWordWrap(True)
+            row.addWidget(lbl)
+            row.addWidget(val, 1)
+            outer.addWidget(row_widget)
+
+        outer.addSpacing(12)
+        close_btn = QPushButton("Tutup")
+        close_btn.setObjectName("runButton")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setMinimumHeight(34)
+        close_btn.clicked.connect(self.accept)
+        outer.addWidget(close_btn)
 
 
 class CanvasView(QGraphicsView):
@@ -855,7 +921,7 @@ class CanvasView(QGraphicsView):
             rect = QGraphicsRectItem(x1, y1, max(1, x2 - x1), max(1, y2 - y1))
             rect.setPen(QPen(QColor(0, 255, 0), 2))
             rect.setBrush(QBrush(QColor(0, 255, 0, 0)))
-            rect.setFlag(QGraphicsItem.ItemIsSelectable, True)
+            rect.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             rect.setData(0, {"index": idx, "box": box, "score": float(score), "class_id": int(cls_id), "class_name": str(
                 class_names[int(cls_id)] if class_names and 0 <= int(cls_id) < len(class_names) else int(cls_id)), })
             self.scene_.addItem(rect)
@@ -1943,7 +2009,14 @@ class MainWindow(QMainWindow):
         if not details or (result is None and card_key not in ("gpu", "tiles")):
             details = details or [("Info", "Belum ada data. Jalankan deteksi terlebih dahulu.")]
 
-        DetectionDetailsDialog(self, titles.get(card_key, "Detail"), details).exec()
+        icon_by_card = {
+            "gpu": "gpu", "detections": "target", "confidence": "percent",
+            "time": "clock", "tiles": "grid",
+        }
+        DetectionDetailsDialog(
+            self, titles.get(card_key, "Detail"), details,
+            icon_name=icon_by_card.get(card_key, "target"),
+        ).exec()
 
     def _build_sidebar(self):
         card_recent = QFrame()
@@ -1986,11 +2059,16 @@ class MainWindow(QMainWindow):
         lbl_input_title.setObjectName("sidebarCardTitle")
         lay_input.addWidget(lbl_input_title)
 
+        lbl_raster_field = QLabel("Raster Multispektral (.tif)")
+        lbl_raster_field.setObjectName("fieldLabel")
+        lay_input.addWidget(lbl_raster_field)
         row_raster = QHBoxLayout()
         self.raster_edit = QLineEdit()
         self.raster_edit.setReadOnly(True)
+        self.raster_edit.setPlaceholderText("Belum ada raster dipilih...")
         self.btn_raster = QPushButton()
         self.btn_raster.setFixedSize(32, 28)
+        self.btn_raster.setToolTip("Pilih file raster multispektral (.tif)")
         self.btn_raster.clicked.connect(self.pick_raster)
         row_raster.addWidget(self.raster_edit, 1)
         row_raster.addWidget(self.btn_raster)
@@ -1998,11 +2076,16 @@ class MainWindow(QMainWindow):
         self.raster_info_label = QLabel("-")
         lay_input.addWidget(self.raster_info_label)
 
+        lbl_model_field = QLabel("Model YOLO (.pt)")
+        lbl_model_field.setObjectName("fieldLabel")
+        lay_input.addWidget(lbl_model_field)
         row_model = QHBoxLayout()
         self.model_edit = QLineEdit()
         self.model_edit.setReadOnly(True)
+        self.model_edit.setPlaceholderText("Belum ada model dipilih...")
         self.btn_model = QPushButton()
         self.btn_model.setFixedSize(32, 28)
+        self.btn_model.setToolTip("Pilih file model terlatih (.pt)")
         self.btn_model.clicked.connect(self.pick_model)
         row_model.addWidget(self.model_edit, 1)
         row_model.addWidget(self.btn_model)
@@ -2010,11 +2093,16 @@ class MainWindow(QMainWindow):
         self.model_info_label = QLabel("-")
         lay_input.addWidget(self.model_info_label)
 
+        lbl_stats_field = QLabel("Band Stats (.json)")
+        lbl_stats_field.setObjectName("fieldLabel")
+        lay_input.addWidget(lbl_stats_field)
         row_stats = QHBoxLayout()
         self.stats_edit = QLineEdit()
         self.stats_edit.setReadOnly(True)
+        self.stats_edit.setPlaceholderText("Belum ada band_stats.json dipilih...")
         self.btn_stats = QPushButton()
         self.btn_stats.setFixedSize(32, 28)
+        self.btn_stats.setToolTip("Pilih file band_stats.json")
         self.btn_stats.clicked.connect(self.pick_stats)
         row_stats.addWidget(self.stats_edit, 1)
         row_stats.addWidget(self.btn_stats)
@@ -2340,6 +2428,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.stage_stepper.reset()
         self.log_console.clear()
+        self.card_confidence.set_value("-")
+        self.card_time.set_value("-")
+        self.card_tiles.set_value("-")
 
         conf = self.conf_slider.value() / 100.0
         tile_size = self.tile_spin.value()
@@ -2380,6 +2471,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100)
         self.last_result = result
         self.card_detections.set_value(str(len(result.boxes)))
+        if len(result.scores) > 0:
+            self.card_confidence.set_value(f"{float(np.mean(result.scores)) * 100:.1f}%")
+        else:
+            self.card_confidence.set_value("-")
+        self.card_time.set_value(f"{result.elapsed_seconds:.1f} s")
+        self.card_tiles.set_value(str(result.n_tiles))
         if result.preview_bgr is not None:
             self.canvas.show_bgr_image(result.preview_bgr)
             self.canvas.show_result(
@@ -2413,6 +2510,9 @@ class MainWindow(QMainWindow):
         self.raster_edit.clear()
         self.canvas._placeholder()
         self.card_detections.set_value("-")
+        self.card_confidence.set_value("-")
+        self.card_time.set_value("-")
+        self.card_tiles.set_value("-")
         self._update_run_enabled()
 
     def export_image(self, fmt: str):

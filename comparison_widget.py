@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QLineEdit, QPushButton,
     QFileDialog, QDoubleSpinBox, QTableWidget, QTableWidgetItem, QMessageBox,
     QListWidget, QListWidgetItem, QInputDialog, QHeaderView, QSplitter,
-    QPlainTextEdit,
+    QPlainTextEdit, QScrollArea,
 )
 
 from model_comparison import (
@@ -133,12 +133,22 @@ class ComparisonPage(QWidget):
 
         split = QSplitter(Qt.Orientation.Horizontal)
 
-        # ---------------- Sidebar kiri ----------------
+        # ---------------- Sidebar kiri (bisa di-scroll) ----------------
+        # Dibungkus QScrollArea supaya kalau tinggi konten sidebar (terutama
+        # label penjelasan threshold yang cukup panjang) melebihi tinggi
+        # jendela/layar kecil, pengguna bisa scroll untuk baca sisanya --
+        # bukannya teks kepotong begitu saja tanpa cara untuk melihat sisanya.
         side = QWidget()
         side.setObjectName("sidebar")
         sv = QVBoxLayout(side)
         sv.setContentsMargins(10, 10, 10, 10)
         sv.setSpacing(12)
+
+        side_scroll = QScrollArea()
+        side_scroll.setWidgetResizable(True)
+        side_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        side_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        side_scroll.setWidget(side)
 
         card_manual = QFrame()
         card_manual.setObjectName("sidebarCard")
@@ -300,7 +310,7 @@ class ComparisonPage(QWidget):
         self.log_box.setMaximumHeight(160)
         rv.addWidget(self.log_box)
 
-        split.addWidget(side)
+        split.addWidget(side_scroll)
         split.addWidget(right)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
