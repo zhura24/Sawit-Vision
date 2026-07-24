@@ -53,7 +53,7 @@ APP_ORG = "UniversitasDiponegoro"
 APP_NAME = "SawitVision"
 APP_TITLE = "Sawit Vision"
 APP_SUBTITLE = "Deteksi Sawit Multispektral"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 APP_TITLE_FULL = f"{APP_TITLE} \u2014 {APP_SUBTITLE}"
 
 # ============================================================
